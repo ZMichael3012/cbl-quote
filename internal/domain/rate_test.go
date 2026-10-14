@@ -70,6 +70,52 @@ func TestAggregator(t *testing.T) {
 	require.ErrorIs(t, err, domain.ErrInvalidRate)
 }
 
+func TestAggregateDetailedSpread(t *testing.T) {
+	t.Parallel()
+
+	aggregator, err := domain.NewAggregator("2")
+	require.NoError(t, err)
+
+	rates := []domain.Rate{
+		{Base: "USDT", Quote: "RUB", Value: "95.00"},
+		{Base: "USDT", Quote: "RUB", Value: "95.50"},
+		{Base: "USDT", Quote: "RUB", Value: "96.00"},
+	}
+	rate, spread, err := aggregator.AggregateDetailed(rates)
+	require.NoError(t, err)
+	assert.Equal(t, "95.50", rate.Value)
+	assert.Equal(t, "0.010471", spread, "(96 - 95) / 95.5 с шестью знаками")
+
+	plain, err := aggregator.Aggregate(rates)
+	require.NoError(t, err)
+	assert.Equal(t, rate.Value, plain.Value, "Aggregate остается оберткой")
+
+	_, spread, err = aggregator.AggregateDetailed(rates[:1])
+	require.NoError(t, err)
+	assert.Equal(t, "0.000000", spread, "один источник - нулевой разброс")
+
+	// Разброс ровно на границе порога допускается (проверка строгая).
+	boundary, boundarySpread, err := aggregator.AggregateDetailed([]domain.Rate{
+		{Base: "USDT", Quote: "RUB", Value: "100.00"},
+		{Base: "USDT", Quote: "RUB", Value: "102.00"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "100.00", boundary.Value)
+	assert.Equal(t, "0.020000", boundarySpread)
+
+	_, _, err = aggregator.AggregateDetailed([]domain.Rate{
+		{Base: "USDT", Quote: "RUB", Value: "95.00"},
+		{Base: "USDT", Quote: "RUB", Value: "100.00"},
+	})
+	require.ErrorIs(t, err, domain.ErrSpread)
+
+	_, _, err = aggregator.AggregateDetailed(nil)
+	require.ErrorIs(t, err, domain.ErrNoSource)
+
+	_, _, err = aggregator.AggregateDetailed([]domain.Rate{{Base: "USDT", Quote: "RUB", Value: "bad"}})
+	require.ErrorIs(t, err, domain.ErrInvalidRate)
+}
+
 func TestAnomalyGuard(t *testing.T) {
 	t.Parallel()
 

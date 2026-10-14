@@ -2,6 +2,7 @@ package usecase_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
@@ -102,6 +103,73 @@ func TestLockQuoteSuccess(t *testing.T) {
 	assert.Equal(t, locked.LockedUntil, saved.LockedUntil)
 	assert.Equal(t, now, saved.CreatedAt)
 	assert.Nil(t, saved.PaymentID)
+
+	// Аудит-поля (6.3): метаданные фиксации заполнены.
+	require.NotNil(t, saved.AsOf)
+	assert.Equal(t, now, *saved.AsOf)
+	require.NotNil(t, saved.TTLSeconds)
+	assert.Equal(t, 300, *saved.TTLSeconds)
+	require.NotNil(t, saved.AmountAsset)
+	assert.Equal(t, "RUB", *saved.AmountAsset)
+	require.NotNil(t, saved.AmountMinor)
+	assert.Equal(t, int64(100_000), *saved.AmountMinor)
+	require.NotNil(t, saved.Spread)
+	assert.Equal(t, "0.000000", *saved.Spread, "один источник - нулевой разброс")
+	assert.False(t, saved.GuardAdjusted)
+	var sources []storage.QuoteSource
+	require.NoError(t, json.Unmarshal([]byte(saved.Sources), &sources))
+	require.Len(t, sources, 1)
+	assert.Equal(t, "a", sources[0].Name)
+	assert.Equal(t, "95.50", sources[0].Value)
+}
+
+// setRate заменяет курс источника для проверки защиты от аномалий.
+func (s *countingSource) setRate(rate domain.Rate) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rate = rate
+}
+
+func TestLockQuoteGuardAdjustedAudit(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
+	aggregator, err := domain.NewAggregator("2")
+	require.NoError(t, err)
+	guard, err := domain.NewAnomalyGuard("10")
+	require.NoError(t, err)
+	source := &countingSource{
+		name: "a",
+		rate: domain.Rate{Base: "USDT", Quote: "RUB", Value: "95.50", AsOf: now},
+	}
+	store := &fakeQuoteStorage{}
+	service := usecase.NewService([]domain.RateSource{source}, aggregator, guard, nil,
+		usecase.WithQuoteStorage(store),
+		usecase.WithClock(fixedClock(now)),
+		usecase.WithLockTTL(5*time.Minute, 15*time.Minute),
+	)
+
+	_, err = service.LockQuote(context.Background(), usecase.LockQuoteRequest{
+		FromAsset: "USDT", ToAsset: "RUB", AmountAsset: "RUB", AmountMinor: 1,
+	})
+	require.NoError(t, err)
+
+	source.setRate(domain.Rate{Base: "USDT", Quote: "RUB", Value: "120.00", AsOf: now.Add(time.Minute)})
+	locked, err := service.LockQuote(context.Background(), usecase.LockQuoteRequest{
+		FromAsset: "USDT", ToAsset: "RUB", AmountAsset: "RUB", AmountMinor: 2,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "95.50", locked.Rate, "аномальный курс заменен последним известным")
+
+	saved, ok := store.last()
+	require.True(t, ok)
+	assert.True(t, saved.GuardAdjusted, "факт подмены виден в аудите")
+	require.NotNil(t, saved.AsOf)
+	assert.Equal(t, now, *saved.AsOf, "as_of относится к выданному курсу, а не к отвергнутой выборке")
+	var sources []storage.QuoteSource
+	require.NoError(t, json.Unmarshal([]byte(saved.Sources), &sources))
+	require.Len(t, sources, 1)
+	assert.Equal(t, "120.00", sources[0].Value, "в аудите остаются сырые данные источников")
 }
 
 func TestLockQuoteCustomTTL(t *testing.T) {
@@ -120,6 +188,30 @@ func TestLockQuoteCustomTTL(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, now.Add(120*time.Second), locked.LockedUntil)
+	saved, ok := store.last()
+	require.True(t, ok)
+	require.NotNil(t, saved.TTLSeconds)
+	assert.Equal(t, 120, *saved.TTLSeconds, "аудит хранит запрошенный TTL")
+}
+
+func TestLockQuoteSubSecondTTLUsesDefault(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
+	store := &fakeQuoteStorage{}
+	service := newLockService(t, store, fixedClock(now),
+		usecase.WithLockTTL(500*time.Millisecond, 15*time.Minute))
+
+	locked, err := service.LockQuote(context.Background(), usecase.LockQuoteRequest{
+		FromAsset: "USDT", ToAsset: "RUB", AmountAsset: "RUB", AmountMinor: 1,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, now.Add(5*time.Minute), locked.LockedUntil, "субсекундный TTL заменяется дефолтом")
+
+	saved, ok := store.last()
+	require.True(t, ok)
+	require.NotNil(t, saved.TTLSeconds)
+	assert.Equal(t, 300, *saved.TTLSeconds, "ttl_seconds не может быть нулевым (CHECK)")
 }
 
 func TestLockQuoteRejectsTTLAboveMax(t *testing.T) {

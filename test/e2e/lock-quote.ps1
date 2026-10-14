@@ -1,6 +1,7 @@
-# E2E CBL-6.2: LockQuote/GetRate на compose-стенде quote.
+# E2E CBL-6.2/6.3: LockQuote/GetRate на compose-стенде quote.
 # Запуск из каталога сервиса: powershell -NoProfile -File test/e2e/lock-quote.ps1
-# Сценарий: compose up -> healthz -> GetRate -> LockQuote -> строка в PostgreSQL -> compose down.
+# Сценарий: compose up -> healthz -> GetRate -> LockQuote -> строка и аудит-поля
+# в PostgreSQL -> compose down.
 $ErrorActionPreference = "Stop"
 
 $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
@@ -35,11 +36,16 @@ try {
     $lock = Invoke-Grpcurl $lockJson "billing.quote.v1.QuoteService/LockQuote"
     if (-not $lock.quoteId) { throw "LockQuote returned no quote id" }
     if ($lock.rate -ne "95.50") { throw "unexpected LockQuote rate: $($lock.rate)" }
+    if ($lock.quoteId -notmatch '^[0-9a-fA-F-]{36}$') { throw "unexpected quote id format: $($lock.quoteId)" }
 
     $count = docker compose -f $ComposeFile exec -T postgres psql -U cbl -d quote -t -A -c "SELECT count(*) FROM quotes WHERE id = '$($lock.quoteId)'"
     if ($count.Trim() -ne "1") { throw "quote $($lock.quoteId) is not persisted in PostgreSQL" }
 
-    Write-Host "OK: GetRate=$($rate.rate), LockQuote=$($lock.quoteId) persisted, locked_until=$($lock.lockedUntil)"
+    # Аудит-поля CBL-6.3: as_of, amount_minor, sources, guard_adjusted, spread.
+    $audit = docker compose -f $ComposeFile exec -T postgres psql -U cbl -d quote -t -A -c "SELECT (as_of IS NOT NULL)::text || ',' || (amount_minor IS NOT NULL)::text || ',' || (jsonb_array_length(coalesce(sources, '[]'::jsonb)) > 0)::text || ',' || guard_adjusted::text || ',' || (spread IS NOT NULL)::text FROM quotes WHERE id = '$($lock.quoteId)'"
+    if ($audit.Trim() -ne "true,true,true,false,true") { throw "quote audit fields are incomplete: '$($audit.Trim())'" }
+
+    Write-Host "OK: GetRate=$($rate.rate), LockQuote=$($lock.quoteId) persisted with audit fields, locked_until=$($lock.lockedUntil)"
 } finally {
     docker compose -f $ComposeFile --profile app down -v | Out-Null
     Pop-Location

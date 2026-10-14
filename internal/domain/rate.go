@@ -113,8 +113,16 @@ func NewAggregator(maxSpreadPct string) (*Aggregator, error) {
 // Aggregate возвращает медианный курс; при разбросе источников выше предела - ErrSpread.
 // Для четного числа источников берется нижняя медиана.
 func (a *Aggregator) Aggregate(rates []Rate) (Rate, error) {
+	rate, _, err := a.AggregateDetailed(rates)
+	return rate, err
+}
+
+// AggregateDetailed возвращает медианный курс и относительный разброс источников
+// (max - min) / median десятичной строкой с шестью знаками: разброс нужен аудиту
+// зафиксированной котировки (6.3).
+func (a *Aggregator) AggregateDetailed(rates []Rate) (Rate, string, error) {
 	if len(rates) == 0 {
-		return Rate{}, ErrNoSource
+		return Rate{}, "", ErrNoSource
 	}
 	type parsed struct {
 		rate  Rate
@@ -124,7 +132,7 @@ func (a *Aggregator) Aggregate(rates []Rate) (Rate, error) {
 	for _, rate := range rates {
 		value, err := ParseDecimal(rate.Value)
 		if err != nil {
-			return Rate{}, fmt.Errorf("%w: source value %q", ErrInvalidRate, rate.Value)
+			return Rate{}, "", fmt.Errorf("%w: source value %q", ErrInvalidRate, rate.Value)
 		}
 		items = append(items, parsed{rate: rate, value: value})
 	}
@@ -137,9 +145,9 @@ func (a *Aggregator) Aggregate(rates []Rate) (Rate, error) {
 	spread := new(big.Rat).Sub(max, min)
 	spread.Quo(spread, median.value)
 	if spread.Cmp(a.maxSpread) > 0 {
-		return Rate{}, fmt.Errorf("%w: %s", ErrSpread, spread.FloatString(4))
+		return Rate{}, "", fmt.Errorf("%w: %s", ErrSpread, spread.FloatString(4))
 	}
-	return median.rate, nil
+	return median.rate, spread.FloatString(6), nil
 }
 
 // guardEntry описывает последнее принятое значение пары.

@@ -3,6 +3,7 @@ package usecase
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -132,15 +133,16 @@ func WithQuoteStorage(quotes QuoteStorage) Option {
 }
 
 // WithLockTTL задает срок фиксации по умолчанию и верхний предел;
-// некорректные значения заменяются значениями по умолчанию.
+// значения меньше секунды и некорректные заменяются значением по умолчанию:
+// TTL аудита хранится целыми секундами, и нулевой ttl_seconds запрещен CHECK-ом.
 func WithLockTTL(defaultTTL, maxTTL time.Duration) Option {
 	return func(s *Service) {
 		s.lockTTL = defaultTTL
-		if s.lockTTL <= 0 {
+		if s.lockTTL < time.Second {
 			s.lockTTL = defaultLockTTL
 		}
 		s.lockMaxTTL = maxTTL
-		if s.lockMaxTTL <= 0 {
+		if s.lockMaxTTL < time.Second {
 			s.lockMaxTTL = defaultLockMaxTTL
 		}
 		if s.lockMaxTTL < s.lockTTL {
@@ -205,7 +207,7 @@ func (s *Service) GetRate(ctx context.Context, base, quote string) (domain.Rate,
 		}
 	}
 
-	rate, err := s.fetchRate(ctx, base, quote, pair)
+	rate, _, err := s.fetchRate(ctx, base, quote, pair)
 	if err == nil {
 		s.storeRate(ctx, pair, rate)
 		return rate, nil
@@ -260,9 +262,25 @@ func validAsset(asset string) bool {
 	return true
 }
 
-// fetchRate собирает курс из источников без кеша: источники, агрегация, guard.
+// fetchMeta описывает доказательную базу зафиксированного курса для аудита (6.3).
+type fetchMeta struct {
+	// sources задает успешные источники в порядке конфигурации.
+	sources []storage.QuoteSource
+	// spread задает относительный разброс источников десятичной строкой.
+	spread string
+	// guardAdjusted указывает, что курс заменен последним известным из-за аномалии.
+	guardAdjusted bool
+}
+
+// fetchRate собирает курс из источников без кеша: источники, агрегация, guard,
+// и возвращает метаданные для аудита (источники, разброс, признак подмены).
 // Детали отказов источников остаются в WARN-логе, наружу идет только класс ошибки.
-func (s *Service) fetchRate(ctx context.Context, base, quote, pair string) (domain.Rate, error) {
+func (s *Service) fetchRate(ctx context.Context, base, quote, pair string) (domain.Rate, fetchMeta, error) {
+	type sourcedRate struct {
+		name string
+		rate domain.Rate
+	}
+	collected := make([]sourcedRate, 0, len(s.sources))
 	rates := make([]domain.Rate, 0, len(s.sources))
 	for _, src := range s.sources {
 		rate, err := src.Fetch(ctx, base, quote)
@@ -271,14 +289,15 @@ func (s *Service) fetchRate(ctx context.Context, base, quote, pair string) (doma
 				zap.String("pair", pair), zap.String("source", src.Name()), zap.Error(err))
 			continue
 		}
+		collected = append(collected, sourcedRate{name: src.Name(), rate: rate})
 		rates = append(rates, rate)
 	}
 	if len(rates) == 0 {
-		return domain.Rate{}, fmt.Errorf("%w: all %d sources failed", domain.ErrNoSource, len(s.sources))
+		return domain.Rate{}, fetchMeta{}, fmt.Errorf("%w: all %d sources failed", domain.ErrNoSource, len(s.sources))
 	}
-	aggregated, err := s.aggregator.Aggregate(rates)
+	aggregated, spread, err := s.aggregator.AggregateDetailed(rates)
 	if err != nil {
-		return domain.Rate{}, err
+		return domain.Rate{}, fetchMeta{}, err
 	}
 	checked, ok := s.guard.Check(aggregated)
 	if !ok {
@@ -288,7 +307,15 @@ func (s *Service) fetchRate(ctx context.Context, base, quote, pair string) (doma
 			zap.String("last", checked.Value),
 		)
 	}
-	return checked, nil
+	meta := fetchMeta{
+		sources:       make([]storage.QuoteSource, 0, len(collected)),
+		spread:        spread,
+		guardAdjusted: !ok,
+	}
+	for _, item := range collected {
+		meta.sources = append(meta.sources, storage.QuoteSource{Name: item.name, Value: item.rate.Value})
+	}
+	return checked, meta, nil
 }
 
 // freshHitUsable проверяет значение из свежего ключа кеша: время не из будущего
@@ -359,7 +386,7 @@ func (s *Service) LockQuote(ctx context.Context, req LockQuoteRequest) (LockedQu
 
 	// Курс фиксируется только по свежим данным источников: кеш Redis недоверенный
 	// и не является источником истины для денежной фиксации (security review 6.2).
-	rate, err := s.fetchRate(ctx, base, quoteAsset, pair)
+	rate, meta, err := s.fetchRate(ctx, base, quoteAsset, pair)
 	if err != nil {
 		return LockedQuote{}, err
 	}
@@ -370,13 +397,29 @@ func (s *Service) LockQuote(ctx context.Context, req LockQuoteRequest) (LockedQu
 	if err != nil {
 		return LockedQuote{}, fmt.Errorf("quote: generate quote id: %w", err)
 	}
+	sourcesJSON, err := json.Marshal(meta.sources)
+	if err != nil {
+		return LockedQuote{}, fmt.Errorf("quote: marshal sources: %w", err)
+	}
+	asOf := rate.AsOf.UTC()
+	ttlSeconds := int(ttl / time.Second)
+	amountMinor := req.AmountMinor
+	amountAssetName := strings.ToUpper(amountAsset)
+	spread := meta.spread
 	record := storage.Quote{
-		ID:          quoteID.String(),
-		BaseAsset:   strings.ToUpper(base),
-		QuoteAsset:  strings.ToUpper(quoteAsset),
-		Rate:        rate.Value,
-		LockedUntil: now.Add(ttl),
-		CreatedAt:   now,
+		ID:            quoteID.String(),
+		BaseAsset:     strings.ToUpper(base),
+		QuoteAsset:    strings.ToUpper(quoteAsset),
+		Rate:          rate.Value,
+		LockedUntil:   now.Add(ttl),
+		CreatedAt:     now,
+		AsOf:          &asOf,
+		TTLSeconds:    &ttlSeconds,
+		AmountAsset:   &amountAssetName,
+		AmountMinor:   &amountMinor,
+		Sources:       string(sourcesJSON),
+		Spread:        &spread,
+		GuardAdjusted: meta.guardAdjusted,
 	}
 	if err := s.quotes.Save(ctx, record); err != nil {
 		// Детали ошибки БД остаются в логе: наружу уходит только класс.
