@@ -1,0 +1,60 @@
+name: cbl-quote
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: cbl
+      POSTGRES_PASSWORD: cbl
+      POSTGRES_DB: quote
+    ports: ["5432:5432"]
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cbl -d quote"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [cbl-net]
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    ports: ["6379:6379"]
+    networks: [cbl-net]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  quote:
+    profiles: ["app"]
+    build:
+      context: ../..
+      dockerfile: cbl-quote/Dockerfile
+    environment:
+      HTTP_ADDR: ":8070"
+      GRPC_ADDR: ":9070"
+      METRICS_ADDR: ":9270"
+      PG_DSN: postgres://cbl:cbl@postgres:5432/quote?sslmode=disable
+      REDIS_ADDR: redis:6379
+      RATE_SOURCE: config
+      RATE_CONFIG: '{"USDT/RUB":"95.50","BTC/USDT":"60000.00"}'
+      RATE_ALLOWED_IDENTICAL_PAIRS: USDT/USD
+    ports:
+      - "8070:8070"
+      - "9070:9070"
+      - "9270:9270"
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    networks: [cbl-net]
+
+volumes:
+  pg-data:
+  redis-data:
+
+networks:
+  cbl-net:
+    driver: bridge
