@@ -18,13 +18,13 @@ services:
     networks: [cbl-net]
   redis:
     image: redis:7-alpine
-    command: ["redis-server", "--appendonly", "yes"]
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "cbl"]
     volumes:
       - redis-data:/data
     ports: ["6379:6379"]
     networks: [cbl-net]
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "cbl", "ping"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -38,7 +38,7 @@ services:
       GRPC_ADDR: ":9070"
       METRICS_ADDR: ":9270"
       PG_DSN: postgres://cbl:cbl@postgres:5432/quote?sslmode=disable
-      REDIS_ADDR: redis:6379
+      REDIS_URL: redis://:cbl@redis:6379/0
       RATE_SOURCE: config
       RATE_CONFIG: '{"USDT/RUB":"95.50","BTC/USDT":"60000.00"}'
       RATE_ALLOWED_IDENTICAL_PAIRS: USDT/USD

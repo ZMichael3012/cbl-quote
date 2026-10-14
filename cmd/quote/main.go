@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health"
@@ -60,21 +61,13 @@ func main() {
 		log.Error("build anomaly guard failed", zap.Error(err))
 		return
 	}
-	resetRaw := getenv("RATE_ANOMALY_RESET", "15m")
-	resetWindow, parseErr := time.ParseDuration(resetRaw)
-	if parseErr != nil {
-		log.Warn("invalid RATE_ANOMALY_RESET, using default 15m", zap.String("value", resetRaw), zap.Error(parseErr))
-	} else {
-		guard.SetResetWindow(resetWindow)
-	}
-	quoteSvc := usecase.NewService(sources, aggregator, guard, log,
-		usecase.WithIdenticalPairs(splitPairs(getenv("RATE_ALLOWED_IDENTICAL_PAIRS", "USDT/USD"))...))
+	guard.SetResetWindow(durationEnv(log, "RATE_ANOMALY_RESET", 15*time.Minute))
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// PG_DSN опционален в 6.1: GetRate работает без базы, миграции готовят схему
-	// котировок для LockQuote (6.2).
+	// PG_DSN опционален: GetRate работает без базы, LockQuote без хранилища недоступен.
+	var repo *storage.Repository
 	if dsn := os.Getenv("PG_DSN"); dsn != "" {
 		db, openErr := gorm.Open(postgres.Open(dsn), &gorm.Config{})
 		if openErr != nil {
@@ -86,10 +79,40 @@ func main() {
 			log.Error("apply migrations failed", zap.String("dir", migrationsDir), zap.Error(migrateErr))
 			return
 		}
-		_ = storage.NewRepository(db) // используется задачей 6.2 (LockQuote)
+		repo = storage.NewRepository(db)
 	} else {
-		log.Warn("PG_DSN is empty: running without quotes storage")
+		log.Warn("PG_DSN is empty: LockQuote will be unavailable")
 	}
+
+	// Redis - только быстрый путь кеша курсов (T-02): его недоступность
+	// деградирует GetRate к источникам и не роняет сервис.
+	var cache usecase.RateCache
+	if redisOptions := redisOptionsFromEnv(log); redisOptions != nil {
+		redisClient := redis.NewClient(redisOptions)
+		defer func() { _ = redisClient.Close() }()
+		cache = storage.NewRedisCache(redisClient)
+		log.Info("rate cache enabled", zap.String("addr", redisOptions.Addr))
+	} else {
+		log.Warn("REDIS_URL/REDIS_ADDR is empty: rate cache disabled")
+	}
+
+	opts := []usecase.Option{
+		usecase.WithIdenticalPairs(splitPairs(getenv("RATE_ALLOWED_IDENTICAL_PAIRS", "USDT/USD"))...),
+		usecase.WithLockTTL(
+			durationEnv(log, "LOCK_QUOTE_TTL", 5*time.Minute),
+			durationEnv(log, "LOCK_QUOTE_MAX_TTL", 15*time.Minute),
+		),
+	}
+	if cache != nil {
+		opts = append(opts, usecase.WithRateCache(cache,
+			durationEnv(log, "RATE_CACHE_TTL", 5*time.Second),
+			durationEnv(log, "RATE_LAST_TTL", time.Hour),
+		))
+	}
+	if repo != nil {
+		opts = append(opts, usecase.WithQuoteStorage(repo))
+	}
+	quoteSvc := usecase.NewService(sources, aggregator, guard, log, opts...)
 
 	httpAddr := getenv("HTTP_ADDR", ":8070")
 	grpcAddr := getenv("GRPC_ADDR", ":9070")
@@ -214,10 +237,56 @@ func metricsHandler() http.Handler {
 	return mux
 }
 
+// redisOptionsFromEnv собирает опции Redis: REDIS_URL (redis:// или rediss://)
+// или REDIS_ADDR с опциональным REDIS_PASSWORD. Таймауты ограничены бюджетом RPC,
+// чтобы недоступный Redis не выводил GetRate за пределы 100 мс.
+func redisOptionsFromEnv(log *zap.Logger) *redis.Options {
+	options := &redis.Options{}
+	switch {
+	case os.Getenv("REDIS_URL") != "":
+		parsed, err := redis.ParseURL(os.Getenv("REDIS_URL"))
+		if err != nil {
+			log.Warn("invalid REDIS_URL, rate cache disabled", zap.Error(err))
+			return nil
+		}
+		options = parsed
+	case os.Getenv("REDIS_ADDR") != "":
+		options.Addr = os.Getenv("REDIS_ADDR")
+		options.Password = os.Getenv("REDIS_PASSWORD")
+	default:
+		return nil
+	}
+	options.DialTimeout = 200 * time.Millisecond
+	options.ReadTimeout = 300 * time.Millisecond
+	options.WriteTimeout = 300 * time.Millisecond
+	options.MaxRetries = 1
+	options.ContextTimeoutEnabled = true
+	return options
+}
+
 // getenv возвращает значение переменной окружения или значение по умолчанию.
 func getenv(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
 	}
 	return fallback
+}
+
+// durationEnv читает длительность из переменной окружения;
+// невалидное значение заменяется значением по умолчанию с предупреждением.
+func durationEnv(log *zap.Logger, key string, fallback time.Duration) time.Duration {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return fallback
+	}
+	parsed, err := time.ParseDuration(raw)
+	if err != nil || parsed <= 0 {
+		log.Warn("invalid duration env, using default",
+			zap.String("key", key),
+			zap.String("value", raw),
+			zap.Duration("default", fallback),
+		)
+		return fallback
+	}
+	return parsed
 }

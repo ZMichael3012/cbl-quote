@@ -1,4 +1,4 @@
-.PHONY: build test test-integration vet lint fmt vuln up down
+.PHONY: build test test-integration vet lint fmt vuln up down e2e
 
 build:
 	go build ./...
@@ -8,6 +8,10 @@ test:
 
 test-integration:
 	go test -tags integration -count=1 ./internal/...
+
+# e2e поднимает compose-стенд и проверяет LockQuote/GetRate через grpcurl (CBL-6.2).
+e2e:
+	powershell -NoProfile -File test/e2e/lock-quote.ps1
 
 vet:
 	go vet ./...

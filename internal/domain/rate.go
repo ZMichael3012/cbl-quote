@@ -21,10 +21,18 @@ var (
 	ErrNoSource = errors.New("quote: no rate source available")
 	// ErrSpread сообщает о недопустимом расхождении источников.
 	ErrSpread = errors.New("quote: source spread too high")
+	// ErrInvalidLock сообщает о некорректном запросе фиксации курса.
+	ErrInvalidLock = errors.New("quote: invalid lock request")
+	// ErrLockStorage сообщает о недоступности хранилища зафиксированных котировок.
+	ErrLockStorage = errors.New("quote: lock storage unavailable")
 )
 
 // maxDecimals задает предельное число знаков после точки в курсе.
 const maxDecimals = 18
+
+// maxIntDigits задает предельное число цифр целой части курса: значения
+// из кеша и источников считаются недоверенным входом и ограничиваются по величине.
+const maxIntDigits = 20
 
 // Rate описывает курс пары активов десятичной строкой без float.
 type Rate struct {
@@ -54,7 +62,7 @@ func ParseDecimal(value string) (*big.Rat, error) {
 		return nil, fmt.Errorf("%w: signed value %q", ErrInvalidRate, value)
 	}
 	intPart, fracPart, hasFrac := strings.Cut(trimmed, ".")
-	if !isDigits(intPart) {
+	if !isDigits(intPart) || len(intPart) > maxIntDigits {
 		return nil, fmt.Errorf("%w: %q", ErrInvalidRate, value)
 	}
 	if hasFrac && (!isDigits(fracPart) || len(fracPart) > maxDecimals) {

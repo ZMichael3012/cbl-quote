@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -14,12 +15,14 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
+	commonv1 "github.com/cbl/cbl-protos/gen/go/billing/common/v1"
 	quotev1 "github.com/cbl/cbl-protos/gen/go/billing/quote/v1"
 
 	"github.com/cbl/cbl-kit/grpcmw"
 
 	"github.com/cbl/cbl-quote/internal/domain"
 	"github.com/cbl/cbl-quote/internal/source"
+	"github.com/cbl/cbl-quote/internal/storage"
 	"github.com/cbl/cbl-quote/internal/transport/grpcserver"
 	"github.com/cbl/cbl-quote/internal/usecase"
 )
@@ -102,4 +105,67 @@ func configSourceWithName(t *testing.T, name, raw string) domain.RateSource {
 	configSource, err := source.NewConfigSource(name, raw, nil)
 	require.NoError(t, err)
 	return configSource
+}
+
+// fakeQuoteStorage реализует usecase.QuoteStorage для транспортных тестов.
+type fakeQuoteStorage struct {
+	saved []storage.Quote
+}
+
+// Save запоминает котировку.
+func (s *fakeQuoteStorage) Save(_ context.Context, quote storage.Quote) error {
+	s.saved = append(s.saved, quote)
+	return nil
+}
+
+// lockQuoteRequest собирает корректный запрос фиксации курса.
+func lockQuoteRequest(ttl uint32) *quotev1.LockQuoteRequest {
+	return &quotev1.LockQuoteRequest{
+		FromAsset:  "USDT",
+		ToAsset:    "RUB",
+		Amount:     &commonv1.Money{MinorUnits: 100_000, Asset: "RUB", Decimals: 2},
+		TtlSeconds: ttl,
+	}
+}
+
+func TestLockQuoteViaGrpc(t *testing.T) {
+	store := &fakeQuoteStorage{}
+	client := newQuoteClient(t,
+		[]domain.RateSource{configSource(t, `{"USDT/RUB":"95.50"}`)},
+		usecase.WithQuoteStorage(store),
+		usecase.WithLockTTL(5*time.Minute, 15*time.Minute),
+	)
+
+	response, err := client.LockQuote(context.Background(), lockQuoteRequest(60))
+	require.NoError(t, err)
+	assert.Equal(t, "95.50", response.GetRate())
+	require.NotEmpty(t, response.GetQuoteId())
+	require.NotNil(t, response.GetLockedUntil())
+	require.Len(t, store.saved, 1)
+	assert.Equal(t, response.GetQuoteId(), store.saved[0].ID)
+	assert.Equal(t, "USDT", store.saved[0].BaseAsset)
+}
+
+func TestLockQuoteGrpcErrors(t *testing.T) {
+	ctx := context.Background()
+
+	withoutStorage := newQuoteClient(t, []domain.RateSource{configSource(t, `{"USDT/RUB":"95.50"}`)})
+	_, err := withoutStorage.LockQuote(ctx, lockQuoteRequest(60))
+	require.Equal(t, codes.Unavailable, status.Code(err))
+
+	withStorage := newQuoteClient(t,
+		[]domain.RateSource{configSource(t, `{"USDT/RUB":"95.50"}`)},
+		usecase.WithQuoteStorage(&fakeQuoteStorage{}),
+		usecase.WithLockTTL(5*time.Minute, 15*time.Minute),
+	)
+	_, err = withStorage.LockQuote(ctx, lockQuoteRequest(3600))
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+
+	_, err = withStorage.LockQuote(ctx, &quotev1.LockQuoteRequest{FromAsset: "USDT", ToAsset: "USDT"})
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+
+	missingAmount := lockQuoteRequest(60)
+	missingAmount.Amount = nil
+	_, err = withStorage.LockQuote(ctx, missingAmount)
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
 }

@@ -11,40 +11,15 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/testcontainers/testcontainers-go"
-	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
-	"github.com/testcontainers/testcontainers-go/wait"
-	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 
-	"github.com/cbl/cbl-kit/storagex"
-
 	"github.com/cbl/cbl-quote/internal/storage"
+	"github.com/cbl/cbl-quote/internal/testsupport"
 )
 
 func setupQuoteDB(t *testing.T) *gorm.DB {
 	t.Helper()
-	ctx := context.Background()
-	container, err := tcpostgres.Run(ctx,
-		"postgres:16-alpine",
-		tcpostgres.WithDatabase("quote"),
-		tcpostgres.WithUsername("cbl"),
-		tcpostgres.WithPassword("cbl"),
-		testcontainers.WithWaitStrategy(
-			wait.ForLog("database system is ready to accept connections").
-				WithOccurrence(2).
-				WithStartupTimeout(90*time.Second),
-		),
-	)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = container.Terminate(context.Background()) })
-
-	dsn, err := container.ConnectionString(ctx, "sslmode=disable")
-	require.NoError(t, err)
-	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
-	require.NoError(t, err)
-	require.NoError(t, storagex.Migrate(ctx, db, filepath.Join("..", "..", "migrations")))
-	return db
+	return testsupport.PostgresDB(t, "quote", filepath.Join("..", "..", "migrations"))
 }
 
 func TestIntegrationQuoteSaveAndGet(t *testing.T) {

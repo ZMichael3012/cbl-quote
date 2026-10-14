@@ -19,7 +19,8 @@ func TestParseDecimal(t *testing.T) {
 		require.NoErrorf(t, err, "value=%q", value)
 	}
 
-	invalid := []string{"", "-1", "+1", "1e2", "1/2", ".5", "5.", "0", "1.2345678901234567890", "abc", " 1 000"}
+	invalid := []string{"", "-1", "+1", "1e2", "1/2", ".5", "5.", "0", "1.2345678901234567890", "abc", " 1 000",
+		"123456789012345678901", "123456789012345678901.5"}
 	for _, value := range invalid {
 		_, err := domain.ParseDecimal(value)
 		require.ErrorIsf(t, err, domain.ErrInvalidRate, "value=%q", value)

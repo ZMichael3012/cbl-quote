@@ -3,6 +3,7 @@ package source
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -63,6 +64,12 @@ func (s *HTTPSource) Fetch(ctx context.Context, base, quote string) (domain.Rate
 	}
 	response, err := s.client.Do(request)
 	if err != nil {
+		// Полный *url.Error содержит URL с query, где у некоторых провайдеров
+		// лежит api_key: наружу и в логи отдается только внутренняя причина.
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) && urlErr.Err != nil {
+			err = urlErr.Err
+		}
 		return domain.Rate{}, fmt.Errorf("%w: request failed: %v", domain.ErrNoSource, err)
 	}
 	defer func() { _ = response.Body.Close() }()
