@@ -5,8 +5,8 @@ import (
 	"time"
 )
 
-// warnThrottle ограничивает частоту однотипных WARN-сообщений,
-// чтобы отказ зависимости не создавал поток логов при высокой нагрузке.
+// warnThrottle limits the rate of same-kind WARN messages
+// so that a dependency failure does not create a flood of logs under high load.
 type warnThrottle struct {
 	mu       sync.Mutex
 	interval time.Duration
@@ -14,8 +14,8 @@ type warnThrottle struct {
 	last     map[string]time.Time
 }
 
-// newWarnThrottle создает ограничитель с заданным интервалом; неположительный
-// интервал означает отсутствие ограничения.
+// newWarnThrottle creates a limiter with the given interval; a non-positive
+// interval means no limit.
 func newWarnThrottle(interval time.Duration, clock func() time.Time) *warnThrottle {
 	if clock == nil {
 		clock = time.Now
@@ -27,8 +27,8 @@ func newWarnThrottle(interval time.Duration, clock func() time.Time) *warnThrott
 	}
 }
 
-// allow сообщает, можно ли записать предупреждение с ключом key:
-// true не чаще одного раза в интервал на ключ.
+// allow reports whether a warning with key can be written:
+// true no more than once per interval per key.
 func (t *warnThrottle) allow(key string) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()

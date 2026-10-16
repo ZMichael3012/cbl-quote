@@ -14,11 +14,11 @@ import (
 	"github.com/cbl/cbl-quote/internal/domain"
 )
 
-// maxResponseBytes задает предельный размер ответа внешнего источника.
+// maxResponseBytes sets the maximum response size of an external source.
 const maxResponseBytes = 1 << 20
 
-// HTTPSource получает курс пары от внешнего HTTP-источника.
-// URL задается шаблоном с подстановками {base} и {quote}.
+// HTTPSource fetches a pair rate from an external HTTP source.
+// The URL is given by a template with {base} and {quote} substitutions.
 type HTTPSource struct {
 	name        string
 	urlTemplate string
@@ -26,7 +26,7 @@ type HTTPSource struct {
 	clock       func() time.Time
 }
 
-// NewHTTPSource создает HTTPSource с таймаутом запроса.
+// NewHTTPSource creates an HTTPSource with a request timeout.
 func NewHTTPSource(name, urlTemplate string, timeout time.Duration, clock func() time.Time) (*HTTPSource, error) {
 	if strings.TrimSpace(urlTemplate) == "" {
 		return nil, fmt.Errorf("%w: empty url template", domain.ErrInvalidRate)
@@ -48,10 +48,10 @@ func NewHTTPSource(name, urlTemplate string, timeout time.Duration, clock func()
 	}, nil
 }
 
-// Name возвращает имя источника.
+// Name returns the source name.
 func (s *HTTPSource) Name() string { return s.name }
 
-// Fetch запрашивает курс пары и ожидает JSON {"rate": "<десятичная строка>"}.
+// Fetch requests the pair rate and expects JSON {"rate": "<decimal string>"}.
 func (s *HTTPSource) Fetch(ctx context.Context, base, quote string) (domain.Rate, error) {
 	requestURL := strings.NewReplacer(
 		"{base}", url.QueryEscape(strings.ToUpper(strings.TrimSpace(base))),
@@ -64,8 +64,8 @@ func (s *HTTPSource) Fetch(ctx context.Context, base, quote string) (domain.Rate
 	}
 	response, err := s.client.Do(request)
 	if err != nil {
-		// Полный *url.Error содержит URL с query, где у некоторых провайдеров
-		// лежит api_key: наружу и в логи отдается только внутренняя причина.
+		// The full *url.Error contains the URL with the query string where some
+		// providers put an api_key: only the inner cause is exposed and logged.
 		var urlErr *url.Error
 		if errors.As(err, &urlErr) && urlErr.Err != nil {
 			err = urlErr.Err

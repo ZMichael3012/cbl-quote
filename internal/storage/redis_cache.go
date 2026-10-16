@@ -12,50 +12,50 @@ import (
 	"github.com/cbl/cbl-quote/internal/domain"
 )
 
-// Префиксы ключей Redis по конвенции CBL-003: свежий курс и последний известный
-// для деградации. Пара активов представляется в ключе через двоеточие.
+// Redis key prefixes per the CBL-003 convention: fresh rate and last known
+// for degradation. The asset pair is represented in the key with a colon.
 const (
 	rateKeyPrefix = "rate:"
 	lastKeyPrefix = "rate:last:"
 )
 
-// RedisCache кеширует курсы в Redis: свежий ключ с коротким TTL
-// и last-known ключ для деградации при недоступности источников.
+// RedisCache caches rates in Redis: a fresh key with a short TTL
+// and a last-known key for degradation when the sources are unavailable.
 type RedisCache struct {
 	client *redis.Client
 }
 
-// NewRedisCache создает RedisCache поверх клиента go-redis.
+// NewRedisCache creates a RedisCache over a go-redis client.
 func NewRedisCache(client *redis.Client) *RedisCache {
 	return &RedisCache{client: client}
 }
 
-// cacheKey строит ключ Redis по паре "BASE/QUOTE".
+// cacheKey builds the Redis key from the "BASE/QUOTE" pair.
 func cacheKey(prefix, pair string) string {
 	return prefix + strings.Replace(pair, "/", ":", 1)
 }
 
-// Get возвращает свежий курс пары; miss возвращается как ok=false без ошибки.
+// Get returns the fresh rate of the pair; a miss is returned as ok=false without an error.
 func (c *RedisCache) Get(ctx context.Context, pair string) (domain.Rate, bool, error) {
 	return c.get(ctx, cacheKey(rateKeyPrefix, pair), pair)
 }
 
-// Set сохраняет свежий курс пары с заданным TTL.
+// Set stores the fresh rate of the pair with the given TTL.
 func (c *RedisCache) Set(ctx context.Context, rate domain.Rate, ttl time.Duration) error {
 	return c.set(ctx, cacheKey(rateKeyPrefix, domain.Key(rate.Base, rate.Quote)), rate, ttl)
 }
 
-// GetLast возвращает последний известный курс пары.
+// GetLast returns the last known rate of the pair.
 func (c *RedisCache) GetLast(ctx context.Context, pair string) (domain.Rate, bool, error) {
 	return c.get(ctx, cacheKey(lastKeyPrefix, pair), pair)
 }
 
-// SetLast сохраняет последний известный курс пары с длинным TTL.
+// SetLast stores the last known rate of the pair with a long TTL.
 func (c *RedisCache) SetLast(ctx context.Context, rate domain.Rate, ttl time.Duration) error {
 	return c.set(ctx, cacheKey(lastKeyPrefix, domain.Key(rate.Base, rate.Quote)), rate, ttl)
 }
 
-// get читает значение ключа и разбирает его; поврежденное значение - miss.
+// get reads and parses the key value; a corrupted value is a miss.
 func (c *RedisCache) get(ctx context.Context, key, pair string) (domain.Rate, bool, error) {
 	value, err := c.client.Get(ctx, key).Result()
 	if errors.Is(err, redis.Nil) {
@@ -68,7 +68,7 @@ func (c *RedisCache) get(ctx context.Context, key, pair string) (domain.Rate, bo
 	return rate, ok, nil
 }
 
-// set записывает значение курса; нулевой TTL отклоняется как ошибка конфигурации.
+// set writes the rate value; a zero TTL is rejected as a configuration error.
 func (c *RedisCache) set(ctx context.Context, key string, rate domain.Rate, ttl time.Duration) error {
 	if ttl <= 0 {
 		return fmt.Errorf("storage: cache set %s: non-positive ttl %s", key, ttl)
@@ -80,8 +80,8 @@ func (c *RedisCache) set(ctx context.Context, key string, rate domain.Rate, ttl 
 	return nil
 }
 
-// parseCachedRate разбирает значение "курс|время"; невалидное значение читается как miss.
-// Проверка через ParseDecimal защищает от поврежденного или чужого содержимого Redis.
+// parseCachedRate parses the "rate|time" value; an invalid value is read as a miss.
+// The ParseDecimal check protects against corrupted or foreign Redis content.
 func parseCachedRate(pair, value string) (domain.Rate, bool) {
 	rawRate, rawTime, ok := strings.Cut(value, "|")
 	if !ok {

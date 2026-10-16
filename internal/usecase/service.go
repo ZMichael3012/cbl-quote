@@ -1,4 +1,4 @@
-// Пакет usecase: сценарии указаны в doc.go.
+// Package usecase: the use cases are listed in doc.go.
 package usecase
 
 import (
@@ -16,70 +16,70 @@ import (
 	"github.com/cbl/cbl-quote/internal/storage"
 )
 
-// Значения по умолчанию для кеша и фиксации курса,
-// а также границы доверия к значениям из Redis.
+// Default values for the cache and quote locking,
+// as well as trust boundaries for values from Redis.
 const (
 	defaultCacheTTL   = 5 * time.Second
 	defaultLastTTL    = time.Hour
 	defaultLockTTL    = 5 * time.Minute
 	defaultLockMaxTTL = 15 * time.Minute
-	// cacheClockSkew задает допустимое опережение часов у значения из кеша.
+	// cacheClockSkew sets the allowed clock skew of a cached value.
 	cacheClockSkew = time.Minute
-	// maxFreshHitAge задает верхнюю границу допустимого возраста свежего значения.
+	// maxFreshHitAge sets the upper bound of the allowed age of a fresh value.
 	maxFreshHitAge = 2 * time.Minute
-	// warnInterval задает минимальный интервал между однотипными WARN.
+	// warnInterval sets the minimum interval between same-kind WARN messages.
 	warnInterval = 30 * time.Second
 )
 
-// RateCache кеширует курсы; Redis - только быстрый путь, его ошибки не ломают GetRate.
+// RateCache caches rates; Redis is only a fast path, its errors do not break GetRate.
 type RateCache interface {
-	// Get возвращает свежий курс пары; miss - ok=false без ошибки.
+	// Get returns the fresh rate of the pair; a miss is ok=false without an error.
 	Get(ctx context.Context, pair string) (domain.Rate, bool, error)
-	// Set сохраняет свежий курс пары с TTL.
+	// Set stores the fresh rate of the pair with a TTL.
 	Set(ctx context.Context, rate domain.Rate, ttl time.Duration) error
-	// GetLast возвращает последний известный курс пары для деградации.
+	// GetLast returns the last known rate of the pair for degradation.
 	GetLast(ctx context.Context, pair string) (domain.Rate, bool, error)
-	// SetLast сохраняет последний известный курс пары с длинным TTL.
+	// SetLast stores the last known rate of the pair with a long TTL.
 	SetLast(ctx context.Context, rate domain.Rate, ttl time.Duration) error
 }
 
-// QuoteStorage сохраняет зафиксированные котировки для аудита.
+// QuoteStorage saves locked quotes for audit.
 type QuoteStorage interface {
-	// Save сохраняет котировку.
+	// Save saves the quote.
 	Save(ctx context.Context, quote storage.Quote) error
 }
 
-// LockQuoteRequest описывает запрос фиксации курса.
+// LockQuoteRequest describes a quote lock request.
 type LockQuoteRequest struct {
-	// FromAsset задает базовый актив.
+	// FromAsset sets the base asset.
 	FromAsset string
-	// ToAsset задает котируемый актив.
+	// ToAsset sets the quote asset.
 	ToAsset string
-	// AmountAsset задает актив суммы, для которой фиксируется курс.
+	// AmountAsset sets the asset of the amount for which the rate is locked.
 	AmountAsset string
-	// AmountMinor задает сумму в минимальных единицах.
+	// AmountMinor sets the amount in minor units.
 	AmountMinor int64
-	// TTLSeconds задает срок фиксации; 0 - значение по умолчанию.
+	// TTLSeconds sets the lock duration; 0 means the default value.
 	TTLSeconds uint32
 }
 
-// LockedQuote описывает зафиксированную котировку.
+// LockedQuote describes a locked quote.
 type LockedQuote struct {
-	// ID задает идентификатор котировки.
+	// ID sets the quote identifier.
 	ID string
-	// Base задает базовый актив.
+	// Base sets the base asset.
 	Base string
-	// Quote задает котируемый актив.
+	// Quote sets the quote asset.
 	Quote string
-	// Rate задает зафиксированный курс десятичной строкой.
+	// Rate sets the locked rate as a decimal string.
 	Rate string
-	// LockedUntil задает срок действия фиксации.
+	// LockedUntil sets the lock expiration time.
 	LockedUntil time.Time
-	// CreatedAt задает время создания котировки.
+	// CreatedAt sets the quote creation time.
 	CreatedAt time.Time
 }
 
-// Service агрегирует курсы источников и защищает от аномальных значений.
+// Service aggregates source rates and protects against anomalous values.
 type Service struct {
 	sources    []domain.RateSource
 	aggregator *domain.Aggregator
@@ -96,10 +96,10 @@ type Service struct {
 	throttle   *warnThrottle
 }
 
-// Option настраивает Service.
+// Option configures Service.
 type Option func(*Service)
 
-// WithIdenticalPairs разрешает пары с совпадающими активами, например USDT/USD.
+// WithIdenticalPairs allows pairs with identical assets, for example USDT/USD.
 func WithIdenticalPairs(pairs ...string) Option {
 	return func(s *Service) {
 		for _, pair := range pairs {
@@ -112,7 +112,7 @@ func WithIdenticalPairs(pairs ...string) Option {
 	}
 }
 
-// WithRateCache подключает кеш курсов; неположительные TTL заменяются значениями по умолчанию.
+// WithRateCache attaches the rate cache; non-positive TTLs are replaced by default values.
 func WithRateCache(cache RateCache, ttl, lastTTL time.Duration) Option {
 	return func(s *Service) {
 		s.cache = cache
@@ -127,14 +127,14 @@ func WithRateCache(cache RateCache, ttl, lastTTL time.Duration) Option {
 	}
 }
 
-// WithQuoteStorage подключает хранилище зафиксированных котировок.
+// WithQuoteStorage attaches the locked quote storage.
 func WithQuoteStorage(quotes QuoteStorage) Option {
 	return func(s *Service) { s.quotes = quotes }
 }
 
-// WithLockTTL задает срок фиксации по умолчанию и верхний предел;
-// значения меньше секунды и некорректные заменяются значением по умолчанию:
-// TTL аудита хранится целыми секундами, и нулевой ttl_seconds запрещен CHECK-ом.
+// WithLockTTL sets the default lock duration and the upper limit;
+// values below one second and invalid values are replaced by the default value:
+// the audit TTL is stored in whole seconds, and a zero ttl_seconds is forbidden by a CHECK.
 func WithLockTTL(defaultTTL, maxTTL time.Duration) Option {
 	return func(s *Service) {
 		s.lockTTL = defaultTTL
@@ -151,7 +151,7 @@ func WithLockTTL(defaultTTL, maxTTL time.Duration) Option {
 	}
 }
 
-// WithClock задает источник времени; используется тестами.
+// WithClock sets the time source; used by tests.
 func WithClock(clock func() time.Time) Option {
 	return func(s *Service) {
 		if clock != nil {
@@ -160,7 +160,7 @@ func WithClock(clock func() time.Time) Option {
 	}
 }
 
-// NewService создает Service.
+// NewService creates a Service.
 func NewService(sources []domain.RateSource, aggregator *domain.Aggregator, guard *domain.AnomalyGuard, log *zap.Logger, opts ...Option) *Service {
 	if log == nil {
 		log = zap.NewNop()
@@ -184,10 +184,10 @@ func NewService(sources []domain.RateSource, aggregator *domain.Aggregator, guar
 	return service
 }
 
-// GetRate возвращает медианный курс пары с кешированием и защитой от аномалий.
-// Значения из Redis считаются недоверенным входом: проверяются возраст и формат.
-// При недоступности всех источников возвращается последний известный курс из кеша
-// в пределах lastTTL, при его отсутствии - ErrNoSource; при разбросе - ErrSpread.
+// GetRate returns the median rate of the pair with caching and anomaly protection.
+// Values from Redis are treated as untrusted input: age and format are validated.
+// When all sources are unavailable, the last known rate from the cache is returned
+// within lastTTL, otherwise ErrNoSource; on spread violation - ErrSpread.
 func (s *Service) GetRate(ctx context.Context, base, quote string) (domain.Rate, error) {
 	base, quote, pair, err := s.validatePair(base, quote)
 	if err != nil {
@@ -232,8 +232,8 @@ func (s *Service) GetRate(ctx context.Context, base, quote string) (domain.Rate,
 	return domain.Rate{}, err
 }
 
-// validatePair нормализует пару и проверяет активы: формат кода, непустоту
-// и запрет совпадающих активов вне whitelist.
+// validatePair normalizes the pair and validates the assets: code format, non-emptiness
+// and the ban on identical assets outside the whitelist.
 func (s *Service) validatePair(base, quote string) (string, string, string, error) {
 	base = strings.TrimSpace(base)
 	quote = strings.TrimSpace(quote)
@@ -248,8 +248,8 @@ func (s *Service) validatePair(base, quote string) (string, string, string, erro
 	return base, quote, domain.Key(base, quote), nil
 }
 
-// validAsset проверяет код актива: 2 - 16 символов латиницы и цифр.
-// Ограничение защищает ключи Redis, guard и логи от значений произвольной длины.
+// validAsset validates the asset code: 2 to 16 characters of Latin letters and digits.
+// The restriction protects Redis keys, the guard and logs from values of arbitrary length.
 func validAsset(asset string) bool {
 	if len(asset) < 2 || len(asset) > 16 {
 		return false
@@ -262,19 +262,19 @@ func validAsset(asset string) bool {
 	return true
 }
 
-// fetchMeta описывает доказательную базу зафиксированного курса для аудита (6.3).
+// fetchMeta describes the evidence base of the locked rate for audit (6.3).
 type fetchMeta struct {
-	// sources задает успешные источники в порядке конфигурации.
+	// sources sets the successful sources in configuration order.
 	sources []storage.QuoteSource
-	// spread задает относительный разброс источников десятичной строкой.
+	// spread sets the relative spread of the sources as a decimal string.
 	spread string
-	// guardAdjusted указывает, что курс заменен последним известным из-за аномалии.
+	// guardAdjusted indicates that the rate was replaced by the last known one due to an anomaly.
 	guardAdjusted bool
 }
 
-// fetchRate собирает курс из источников без кеша: источники, агрегация, guard,
-// и возвращает метаданные для аудита (источники, разброс, признак подмены).
-// Детали отказов источников остаются в WARN-логе, наружу идет только класс ошибки.
+// fetchRate collects the rate from the sources without the cache: sources, aggregation, guard,
+// and returns metadata for audit (sources, spread, substitution flag).
+// Source failure details stay in the WARN log, only the error class is returned.
 func (s *Service) fetchRate(ctx context.Context, base, quote, pair string) (domain.Rate, fetchMeta, error) {
 	type sourcedRate struct {
 		name string
@@ -318,8 +318,8 @@ func (s *Service) fetchRate(ctx context.Context, base, quote, pair string) (doma
 	return checked, meta, nil
 }
 
-// freshHitUsable проверяет значение из свежего ключа кеша: время не из будущего
-// и возраст в пределах двойного TTL или двух минут.
+// freshHitUsable validates a value from the fresh cache key: the time is not from the future
+// and the age is within double the TTL or two minutes.
 func (s *Service) freshHitUsable(rate domain.Rate) bool {
 	now := s.clock()
 	if rate.AsOf.After(now.Add(cacheClockSkew)) {
@@ -329,8 +329,8 @@ func (s *Service) freshHitUsable(rate domain.Rate) bool {
 	return now.Sub(rate.AsOf) <= maxAge
 }
 
-// lastKnownUsable проверяет значение last-known: время не из будущего
-// и возраст в пределах TTL last-known плюс минута.
+// lastKnownUsable validates a last-known value: the time is not from the future
+// and the age is within the last-known TTL plus one minute.
 func (s *Service) lastKnownUsable(rate domain.Rate) bool {
 	now := s.clock()
 	if rate.AsOf.After(now.Add(cacheClockSkew)) {
@@ -339,7 +339,7 @@ func (s *Service) lastKnownUsable(rate domain.Rate) bool {
 	return now.Sub(rate.AsOf) <= s.lastTTL+time.Minute
 }
 
-// storeRate записывает курс в кеш (свежий и last-known); ошибки кеша только логируются.
+// storeRate writes the rate to the cache (fresh and last-known); cache errors are only logged.
 func (s *Service) storeRate(ctx context.Context, pair string, rate domain.Rate) {
 	if s.cache == nil {
 		return
@@ -352,17 +352,17 @@ func (s *Service) storeRate(ctx context.Context, pair string, rate domain.Rate) 
 	}
 }
 
-// warn пишет WARN не чаще интервала троттлинга: отказ зависимости не должен
-// создавать поток логов при высокой нагрузке.
+// warn writes a WARN no more often than the throttling interval: a dependency failure
+// must not create a flood of logs under high load.
 func (s *Service) warn(key, message string, fields ...zap.Field) {
 	if s.throttle.allow(key) {
 		s.log.Warn(message, fields...)
 	}
 }
 
-// LockQuote фиксирует курс пары на срок TTL и сохраняет котировку для аудита.
-// Идемпотентность уровня платежа обеспечивает вызывающая сторона: повторный вызов
-// создает новую котировку, эффекта на деньги сам по себе не имеет.
+// LockQuote locks the rate of the pair for a TTL and saves the quote for audit.
+// Payment-level idempotency is provided by the caller: a repeated call
+// creates a new quote and by itself has no effect on money.
 func (s *Service) LockQuote(ctx context.Context, req LockQuoteRequest) (LockedQuote, error) {
 	base, quoteAsset, pair, err := s.validatePair(req.FromAsset, req.ToAsset)
 	if err != nil {
@@ -384,8 +384,8 @@ func (s *Service) LockQuote(ctx context.Context, req LockQuoteRequest) (LockedQu
 		return LockedQuote{}, fmt.Errorf("%w: quotes storage is not configured", domain.ErrLockStorage)
 	}
 
-	// Курс фиксируется только по свежим данным источников: кеш Redis недоверенный
-	// и не является источником истины для денежной фиксации (security review 6.2).
+	// The rate is locked only from fresh source data: the Redis cache is untrusted
+	// and is not a source of truth for money locking (security review 6.2).
 	rate, meta, err := s.fetchRate(ctx, base, quoteAsset, pair)
 	if err != nil {
 		return LockedQuote{}, err
@@ -422,7 +422,7 @@ func (s *Service) LockQuote(ctx context.Context, req LockQuoteRequest) (LockedQu
 		GuardAdjusted: meta.guardAdjusted,
 	}
 	if err := s.quotes.Save(ctx, record); err != nil {
-		// Детали ошибки БД остаются в логе: наружу уходит только класс.
+		// DB error details stay in the log: only the class is returned.
 		s.warn("lock-save:"+pair, "lock quote save failed",
 			zap.String("pair", pair), zap.String("quote_id", record.ID), zap.Error(err))
 		return LockedQuote{}, fmt.Errorf("%w: quotes storage failure", domain.ErrLockStorage)

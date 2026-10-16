@@ -19,7 +19,7 @@ import (
 	"github.com/cbl/cbl-quote/internal/usecase"
 )
 
-// newIntegrationService собирает сервис на реальных PostgreSQL и Redis.
+// newIntegrationService builds a service on real PostgreSQL and Redis.
 func newIntegrationService(t *testing.T, source domain.RateSource, cacheTTL, lastTTL time.Duration) (*usecase.Service, *storage.Repository) {
 	t.Helper()
 	db := testsupport.PostgresDB(t, "quote", filepath.Join("..", "..", "migrations"))
@@ -39,7 +39,7 @@ func newIntegrationService(t *testing.T, source domain.RateSource, cacheTTL, las
 	return service, repo
 }
 
-// setError задает ошибку источника для сценариев деградации в интеграционных тестах.
+// setError sets the source error for degradation scenarios in integration tests.
 func (s *countingSource) setError(err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -62,7 +62,7 @@ func TestIntegrationGetRateCacheHitRedis(t *testing.T) {
 	second, err := service.GetRate(ctx, "USDT", "RUB")
 	require.NoError(t, err)
 	assert.Equal(t, "95.50", second.Value)
-	assert.Equal(t, 1, source.callCount(), "второй вызов обслужен из Redis без обращения к источнику")
+	assert.Equal(t, 1, source.callCount(), "the second call is served from Redis without hitting the source")
 }
 
 func TestIntegrationGetRateFallbackLastKnownRedis(t *testing.T) {
@@ -81,7 +81,7 @@ func TestIntegrationGetRateFallbackLastKnownRedis(t *testing.T) {
 	time.Sleep(120 * time.Millisecond)
 
 	fallback, err := service.GetRate(ctx, "USDT", "RUB")
-	require.NoError(t, err, "последний известный курс обслуживает запрос при недоступности источников")
+	require.NoError(t, err, "the last known rate serves the request when the sources are unavailable")
 	assert.Equal(t, "95.50", fallback.Value)
 	assert.Equal(t, 2, source.callCount())
 }

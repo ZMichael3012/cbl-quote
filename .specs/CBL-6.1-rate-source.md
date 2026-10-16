@@ -1,30 +1,30 @@
-# CBL-6.1. Источник курсов и защита от аномалий
+# CBL-6.1. Rate source and anomaly protection
 
-| Поле | Значение |
+| Field | Value |
 | :-- | :-- |
-| Эпик | E6, Quote Service |
-| Репозиторий | `cbl-quote` |
-| Размер | M |
-| Волна и параллельная группа | W1-QUOTE |
-| Зависит от | 1.7 (CF-1), 1.1 |
-| Версия контрактов | `cbl-protos@cf-1` (`billing/quote/v1`) |
-| Статус | done (локально, ожидает коммита) |
+| Epic | E6, Quote Service |
+| Repository | `cbl-quote` |
+| Size | M |
+| Wave and parallel group | W1-QUOTE |
+| Depends on | 1.7 (CF-1), 1.1 |
+| Contract version | `cbl-protos@cf-1` (`billing/quote/v1`) |
+| Status | done (locally, awaiting commit) |
 
-## 1. Контекст и цель
+## 1. Context and goal
 
-Курс фиксируется на время жизни счета: пользователь видит одну сумму и один адрес. Сервис
-хранит источник курсов, кеширует его в Redis и защищает денежный контур от аномальных значений.
+The rate is locked for the lifetime of the invoice: the user sees one amount and one address. The service
+stores the rate source, caches it in Redis, and protects the money path from anomalous values.
 
-## 2. Границы
+## 2. Boundaries
 
-In scope: провайдеры курсов (интерфейс, config и http источники), агрегация, защита от
-аномалий, хранение зафиксированных котировок (аудит), обслуживание `GetRate` через gRPC и
-конфигурация через env (`RATE_SOURCE`, `RATE_CONFIG`, `RATE_HTTP_URL`).
-Out of scope: `LockQuote` и кеш курсов в Redis (6.2, KI-quote-02), биржевые ключи.
+In scope: rate providers (interface, config and http sources), aggregation, anomaly
+protection, storage of locked quotes (audit), serving `GetRate` over gRPC, and
+configuration via env (`RATE_SOURCE`, `RATE_CONFIG`, `RATE_HTTP_URL`).
+Out of scope: `LockQuote` and the rate cache in Redis (6.2, KI-quote-02), exchange keys.
 
-## 3. Функциональные требования
+## 3. Functional requirements
 
-FR-1. Интерфейс источника (internal/domain):
+FR-1. Source interface (internal/domain):
 
 ```go
 type RateSource interface {
@@ -33,84 +33,83 @@ type RateSource interface {
 }
 type Rate struct {
     Base, Quote string
-    Value       string // десятичная строка, float запрещен
+    Value       string // decimal string, float forbidden
     AsOf        time.Time
 }
 ```
 
-FR-2. Источники: `config` (статические пары из env `RATE_CONFIG`, для dev и mock-стенда) и
-`http` (внешний API, URL из env; включается флагом `RATE_SOURCE`). Агрегация нескольких
-источников: медиана значений; при расхождении источников более `RATE_MAX_SPREAD_PCT` (default 2)
-курс считается аномальным.
+FR-2. Sources: `config` (static pairs from env `RATE_CONFIG`, for dev and the mock stand) and
+`http` (external API, URL from env; enabled by the `RATE_SOURCE` flag). Aggregation of several
+sources: the median of the values; when the sources diverge by more than `RATE_MAX_SPREAD_PCT` (default 2)
+the rate is considered anomalous.
 
-FR-3. Защита от аномалий: если новое значение отклоняется от последнего закешированного
-более чем на `RATE_ANOMALY_PCT` (default 10), значение не публикуется, возвращается последнее
-известное и пишется WARN-лог с обоими значениями.
+FR-3. Anomaly protection: if the new value deviates from the last cached one by
+more than `RATE_ANOMALY_PCT` (default 10), the value is not published, the last
+known value is returned, and a WARN log with both values is written.
 
-FR-4. Валидация: положительное значение, не более 18 знаков после точки, оба актива непустые
-и не равны друг другу (кроме разрешенной пары USDT/USD при конфигурации).
+FR-4. Validation: a positive value, no more than 18 digits after the decimal point, both assets
+non-empty and not equal to each other (except the allowed USDT/USD pair under configuration).
 
-FR-5. Значение курса хранится и передается строкой; арифметика над курсом - только через
-десятичные операции (допускается `math/big.Rat` внутри), float запрещен полностью.
+FR-5. The rate value is stored and transmitted as a string; arithmetic on the rate uses only
+decimal operations (`math/big.Rat` is allowed internally), float is fully forbidden.
 
-FR-6. Локальные зависимости: `replace` на `../cbl-kit` (middleware, storagex) и
-`../cbl-protos` (`billing/quote/v1`) подключены уже в 6.1 для RPC `GetRate` и миграций.
+FR-6. Local dependencies: `replace` directives to `../cbl-kit` (middleware, storagex) and
+`../cbl-protos` (`billing/quote/v1`) are already wired in 6.1 for the `GetRate` RPC and migrations.
 
-## 4. Контракты
+## 4. Contracts
 
-`GetRateResponse{rate, as_of}` и `LockQuoteResponse{quote_id, rate, locked_until}` -
-`billing/quote/v1` (заморожен CF-1). Rate - десятичная строка.
+`GetRateResponse{rate, as_of}` and `LockQuoteResponse{quote_id, rate, locked_until}` -
+`billing/quote/v1` (frozen by CF-1). Rate is a decimal string.
 
-## 5. Модель данных и миграции
+## 5. Data model and migrations
 
-`migrations/00001_quotes.sql`: таблица `quotes (id uuid PK, payment_id text NULL, base_asset
+`migrations/00001_quotes.sql`: the table `quotes (id uuid PK, payment_id text NULL, base_asset
 text NOT NULL, quote_asset text NOT NULL, rate text NOT NULL, locked_until timestamptz NOT NULL,
-created_at timestamptz NOT NULL DEFAULT now())`, индекс `(payment_id)`,
-`(base_asset, quote_asset, created_at)`. Кеш курсов - в Redis (task 6.2), TTL 5 - 10 секунд.
+created_at timestamptz NOT NULL DEFAULT now())`, indexes `(payment_id)`,
+`(base_asset, quote_asset, created_at)`. The rate cache is in Redis (task 6.2), TTL 5 - 10 seconds.
 
-## 6. Конечные автоматы
+## 6. State machines
 
-Не применимо.
+Not applicable.
 
 ## 7. Edge cases
 
-Источник недоступен (до 6.2 ошибка при недоступности всех источников, после - курс из кеша),
-некорректный ответ внешнего API, аномальный скачок, нулевое значение, неизвестная пара
-активов, отсутствие последнего значения при аномалии (возвращается наиболее ранний из
-доступных источников с пометкой), пары с совпадающими активами вне whitelist.
+Source unavailable (before 6.2 an error when all sources are unavailable, after - the rate from the cache),
+malformed external API response, anomalous jump, zero value, unknown asset
+pair, no last value during an anomaly (the earliest of the
+available sources is returned with a marker), pairs with identical assets outside the whitelist.
 
-## 8. Нефункциональные требования
+## 8. Non-functional requirements
 
-Кеш курсов (Redis, TTL 5 - 10 секунд) реализуется в 6.2 (KI-quote-02); до этого `GetRate`
-обращается к источникам при каждом вызове. Все значения детерминировано тестируемы (clock и
-источник инжектируются интерфейсами).
+The rate cache (Redis, TTL 5 - 10 seconds) is implemented in 6.2 (KI-quote-02); until then `GetRate`
+calls the sources on every invocation. All values are deterministically testable (the clock and the
+source are injected via interfaces).
 
-## 9. План тестов
+## 9. Test plan
 
-| Уровень | Сценарии |
+| Level | Scenarios |
 | :-- | :-- |
 | Smoke | `go build ./...` |
-| Unit | агрегация медианы, spoofed источник, аномалия, валидация строки курса, clock-контроль |
-| Integration | testcontainers PostgreSQL + Redis: сохранение котировки, кеш-hit без вызова источника |
-| E2E | не применимо до 6.2 |
-| Load | не применимо (14.1) |
+| Unit | median aggregation, spoofed source, anomaly, rate string validation, clock control |
+| Integration | testcontainers PostgreSQL + Redis: quote persistence, cache hit without a source call |
+| E2E | not applicable before 6.2 |
+| Load | not applicable (14.1) |
 
-## 10. План работ и коммит
+## 10. Work plan and commit
 
-Коммит `CBL-6.1: источник курсов и защита от аномалий`; спека в том же коммите.
+Commit `CBL-6.1: rate source and anomaly protection`; the spec is in the same commit.
 
-## 11. Открытые вопросы
+## 11. Open questions
 
-- Выбор внешнего источника курсов на prod: решается до задачи 14.2; до этого `config`.
+- The choice of the external rate source for prod: decided before task 14.2; until then `config`.
 
-## 12. Ревью (CBL-001, шаг 6)
+## 12. Review (CBL-001, step 6)
 
-Четыре независимых прохода (13 - 14.10.2026): 1 блокер, 3 major, minor; все закрыты.
+Four independent passes (13 - 14.10.2026): 1 blocker, 3 major, minor; all closed.
 
-| Роль | Ключевые замечания | Закрытие |
+| Role | Key findings | Closure |
 | :-- | :-- | :-- |
-| Без контекста | `AnomalyGuard` без синхронизации (гонка и падение процесса); coverage 76.09% | мьютекс + тест конкурентности; тесты `ConfigSource` и gRPC-транспорта; покрытие 90.5% |
-| Архитектуры | отсутствовал `http`-источник и выбор через `RATE_SOURCE`; сервис не подключен в main (не отдавал RPC); состояние guard не переживает перезапуск | `HTTPSource` и env-конфигурация реализованы; main собирает сервис и регистрирует `QuoteService.GetRate`; состояние guard - trade-off T-QUOTE-01 |
-| С контекстом | дефолты spread/anomaly не читались; нет теста clock | env-дефолты (2%, 10%, окно 15m) и тесты с инъекцией времени |
-| Безопасности | после аномалии `last` не обновлялся - вечное отвержение реального сдвига; identical pair не имел исключения | окно повторной синхронизации `RATE_ANOMALY_RESET`; whitelist `RATE_ALLOWED_IDENTICAL_PAIRS` |
-
+| No context | `AnomalyGuard` without synchronization (race and process crash); coverage 76.09% | mutex + concurrency test; `ConfigSource` and gRPC transport tests; coverage 90.5% |
+| Application architecture | the `http` source and selection via `RATE_SOURCE` were missing; the service was not wired in main (it did not serve RPCs); guard state does not survive a restart | `HTTPSource` and env configuration implemented; main wires the service and registers `QuoteService.GetRate`; guard state - trade-off T-QUOTE-01 |
+| With context | spread/anomaly defaults were not read; no clock test | env defaults (2%, 10%, window 15m) and tests with time injection |
+| Security | after an anomaly `last` was not updated - a real shift was rejected forever; the identical pair had no exception | resynchronization window `RATE_ANOMALY_RESET`; whitelist `RATE_ALLOWED_IDENTICAL_PAIRS` |

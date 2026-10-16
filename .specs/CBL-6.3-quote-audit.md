@@ -1,142 +1,145 @@
-# CBL-6.3. Хранение зафиксированных котировок для аудита
+# CBL-6.3. Storage of locked quotes for audit
 
-| Поле | Значение |
+| Field | Value |
 | :-- | :-- |
-| Эпик | E6, Quote |
-| Репозиторий | `cbl-quote` |
-| Размер | S |
-| Волна и параллельная группа | W1-QUOTE |
-| Зависит от | 6.2 |
-| Версия контрактов | `cbl-protos@cf-1` (контракт не меняется) |
-| Статус | done, ревью закрыто |
+| Epic | E6, Quote |
+| Repository | `cbl-quote` |
+| Size | S |
+| Wave and parallel group | W1-QUOTE |
+| Depends on | 6.2 |
+| Contract version | `cbl-protos@cf-1` (contract unchanged) |
+| Status | done, review closed |
 
-## 1. Контекст и цель
+## 1. Context and goal
 
-`LockQuote` уже сохраняет строку в `quotes` (`CBL-6.2`), но запись содержит только курс
-и срок. Для аудита денежной фиксации нужен неизменяемый журнал с доказательной базой:
-какой курс источников и когда был зафиксирован, для какой суммы, с каким разбросом
-и не был ли курс подменен защитой от аномалий. Задача закрывает открытые вопросы 6.2
-(хранить ли сумму и `rate_as_of`) и делает таблицу append-only.
+`LockQuote` already persists a row in `quotes` (`CBL-6.2`), but the record contains only the
+rate and the term. Auditing a monetary lock requires an immutable journal with an evidence
+base: which source rates and when were locked, for which amount, with what spread, and
+whether the rate was substituted by the anomaly guard. The task closes the open questions of
+6.2 (whether to store the amount and `rate_as_of`) and makes the table append-only.
 
-## 2. Границы
+## 2. Scope
 
-In scope: миграция 00002 (аудит-поля, append-only триггер, индекс), `AggregateDetailed`,
-заполнение полей в `LockQuote`, тесты, расширение e2e.
-Out of scope: изменение gRPC-контракта (CF-1 заморожен; `LockQuoteResponse` не меняется),
-заполнение `payment_id` (нет в контракте; появится с 4.2/CF-2), ретеншен и партиционирование
-(14.2), админ-чтение журнала (12.x, Back-office), k6 (14.1).
+In scope: migration 00002 (audit fields, append-only trigger, index), `AggregateDetailed`,
+field population in `LockQuote`, tests, e2e extension.
+Out of scope: gRPC contract change (CF-1 is frozen; `LockQuoteResponse` is unchanged),
+`payment_id` population (not in the contract; will appear with 4.2/CF-2), retention and
+partitioning (14.2), admin journal reads (12.x, Back-office), k6 (14.1).
 
-## 3. Функциональные требования
+## 3. Functional requirements
 
-FR-1. Журнал аудита: каждая зафиксированная котировка хранится неизменяемо, `quotes` -
-append-only таблица: UPDATE и DELETE запрещены row-триггером, TRUNCATE - statement-триггером
-(по образцу append-only триггера `entries` в леджере). Исправление ошибочной записи -
-только новая котировка. Обход уровня владельца БД (`DISABLE TRIGGER`, `DROP TABLE`) вне
-модели угроз dev-стенда; в prod права приложения ограничиваются ролями (0.4/0.6).
+FR-1. Audit journal: every locked quote is stored immutably; `quotes` is an append-only
+table: UPDATE and DELETE are forbidden by a row trigger, TRUNCATE by a statement trigger
+(following the pattern of the append-only trigger on ledger `entries`). An erroneous record
+can only be corrected by a new quote. Bypass at the DB owner level (`DISABLE TRIGGER`,
+`DROP TABLE`) is outside the dev stand threat model; in prod, application rights are
+restricted by roles (0.4/0.6).
 
-FR-2. Миграция 00002 расширяет `quotes`: `as_of` (время актуальности зафиксированного
-курса источников), `ttl_seconds` (запрошенный срок фиксации), `amount_asset` +
-`amount_minor` (сумма запроса, для которой зафиксирован курс), `sources` (jsonb-массив
-`{"name","value"}` источников, давших курс), `spread` (относительный разброс источников
-десятичной строкой, 6 знаков), `guard_adjusted` (курс заменен последним известным
-из-за аномалии; `NOT NULL DEFAULT false`, безопасно для legacy-строк). Остальные новые
-колонки nullable (legacy-строки dev-стендов), при заполнении проверяются CHECK:
-`ttl_seconds > 0`, `amount_minor > 0`. Индекс аудита `quotes_created_at_idx (created_at, id)`.
+FR-2. Migration 00002 extends `quotes`: `as_of` (the actuality time of the locked source
+rate), `ttl_seconds` (the requested lock term), `amount_asset` + `amount_minor` (the request
+amount for which the rate was locked), `sources` (jsonb array of `{"name","value"}` sources
+that produced the rate), `spread` (relative spread of sources as a decimal string, 6
+digits), `guard_adjusted` (the rate was replaced with the last known one because of an
+anomaly; `NOT NULL DEFAULT false`, safe for legacy rows). The remaining new columns are
+nullable (legacy rows of dev stands); when populated, they are validated by CHECK:
+`ttl_seconds > 0`, `amount_minor > 0`. Audit index `quotes_created_at_idx (created_at, id)`.
 
-FR-3. Домен: `Aggregator.AggregateDetailed` возвращает медианный курс и относительный
-разброс `(max - min) / median` десятичной строкой (6 знаков); `Aggregate` остается
-оберткой (совместимость). Разброс вычисляется теми же значениями, что и проверка порога,
-без повторного разбора; равенство порогу допускается (проверка строгая).
+FR-3. Domain: `Aggregator.AggregateDetailed` returns the median rate and the relative spread
+`(max - min) / median` as a decimal string (6 digits); `Aggregate` remains a wrapper
+(compatibility). The spread is computed from the same values as the threshold check, without
+re-parsing; equality to the threshold is allowed (the check is strict).
 
-FR-4. `LockQuote` фиксирует аудит-поля: `as_of` из курса источников (при подмене защитой
-от аномалий - время выданного последнего известного курса), `ttl_seconds` из принятого
-TTL (субсекундные значения конфигурации заменяются дефолтом: аудит хранит целые
-секунды, CHECK запрещает ноль), сумма и актив из запроса (после проверки соответствия
-паре), `sources` - успешные источники в порядке конфигурации (сырые значения выборки,
-даже если guard ее отверг), `spread` из агрегатора, `guard_adjusted=true`, когда
-`AnomalyGuard` вернул последнее известное значение (фиксируется именно выданный курс,
-факт подмены виден в аудите). `payment_id` остается NULL: в контракте CF-1 его нет;
-решение о заполнении - 4.2/CF-2.
+FR-4. `LockQuote` records the audit fields: `as_of` from the source rate (when substituted
+by the anomaly guard, the time of the issued last known rate), `ttl_seconds` from the
+accepted TTL (sub-second configuration values are replaced with the default: the audit
+stores whole seconds, CHECK forbids zero), the amount and asset from the request (after
+verifying they match the pair), `sources` - the successful sources in configuration order
+(raw sample values, even if the guard rejected the sample), `spread` from the aggregator,
+`guard_adjusted=true` when `AnomalyGuard` returned the last known value (exactly the issued
+rate is recorded; the substitution fact is visible in the audit). `payment_id` remains NULL:
+it is not in the CF-1 contract; the decision on populating it is 4.2/CF-2.
 
-FR-5. e2e `test/e2e/lock-quote.ps1` дополнительно проверяет заполнение аудит-полей
-в PostgreSQL (as_of, amount_minor, sources не пусты, guard_adjusted=false).
+FR-5. The e2e run per `test/e2e/E2E.md` (scenario E2E_Quote_LockQuote, compose stand)
+additionally checks audit field population in PostgreSQL (as_of, amount_minor, sources not
+empty, guard_adjusted=false).
 
-## 4. Контракты
+## 4. Contracts
 
-Внешние контракты не меняются: `LockQuoteResponse` (CF-1) не расширяется, аудит-данные
-доступны только через PostgreSQL (чтение для Back-office - 12.x, вне рамок). Формат
-`spread` и `sources` фиксируется в этой спеке и AGENTS сервиса.
+External contracts are unchanged: `LockQuoteResponse` (CF-1) is not extended; audit data is
+accessible only via PostgreSQL (reads for Back-office are 12.x, out of scope). The format of
+`spread` and `sources` is fixed in this spec and in the service AGENTS.md.
 
-## 5. Модель данных и миграции
+## 5. Data model and migrations
 
-`migrations/00002_quote_audit.sql`: ALTER TABLE + CHECK + индекс + append-only триггер
-(DDL по образцу `00001_ledger_init.sql` леджера: функция `quotes_append_only`).
+`migrations/00002_quote_audit.sql`: ALTER TABLE + CHECK + index + append-only trigger (DDL
+following the pattern of ledger `00001_ledger_init.sql`: function `quotes_append_only`).
 
-## 6. Конечные автоматы
+## 6. State machines
 
-Не применимо; котировка неизменяема, срок в `locked_until` (проверка актуальности -
-задача Payment/Billing API).
+Not applicable; a quote is immutable, the term is in `locked_until` (the actuality check is
+the Payment/Billing API task).
 
 ## 7. Edge cases
 
-Legacy-строки без аудит-полей (чтение `Get` не падает); UPDATE, DELETE и TRUNCATE
-отклоняются триггерами; повторный INSERT с тем же id отклоняется уникальностью (upsert
-невозможен: `Create` без `ON CONFLICT`); guard заменил курс (в аудите
-`guard_adjusted=true`, выданный курс, `as_of` выданного курса и сырые значения
-отвергнутой выборки); разброс ровно на границе порога (запись сохраняется с фактическим
-spread); один источник (spread 0); субсекундный `LOCK_QUOTE_TTL` (заменяется дефолтом,
-`ttl_seconds` не может быть нулевым); TTL на границе максимума; сумма в минимальных
-единицах другого актива пары; падение БД между проверкой и записью (ошибка
-`ErrLockStorage`, аудит не создается).
+Legacy rows without audit fields (`Get` reads do not fail); UPDATE, DELETE and TRUNCATE are
+rejected by triggers; a repeated INSERT with the same id is rejected by uniqueness (upsert
+is impossible: `Create` without `ON CONFLICT`); the guard substituted the rate (the audit
+holds `guard_adjusted=true`, the issued rate, the `as_of` of the issued rate and the raw
+values of the rejected sample); spread exactly at the threshold boundary (the record is
+stored with the actual spread); a single source (spread 0); sub-second `LOCK_QUOTE_TTL`
+(replaced with the default, `ttl_seconds` cannot be zero); TTL at the maximum boundary; the
+amount in minor units of the other asset of the pair; DB failure between the check and the
+write (`ErrLockStorage` error, no audit is created).
 
-## 8. Нефункциональные требования
+## 8. Non-functional requirements
 
-Неизменяемость журнала гарантируется БД, а не приложением (триггеры UPDATE/DELETE/
-TRUNCATE; обход уровня владельца БД - вне модели угроз dev, роли prod - 0.4/0.6);
-запись аудита - та же единственная INSERT-транзакция, что и раньше (бюджет LockQuote
-не меняется); размер `quotes` растет на каждую фиксацию, добавлен третий индекс на
-INSERT-путь (ретеншен - KI-quote-07); никакие данные запроса, кроме суммы и активов,
-в журнал не попадают (ни URL источников, ни секреты; имена источников задаются
-оператором, KI-quote-08).
+Journal immutability is guaranteed by the DB, not the application (UPDATE/DELETE/TRUNCATE
+triggers; DB owner level bypass is outside the dev threat model, prod roles are 0.4/0.6);
+the audit write is the same single INSERT transaction as before (the LockQuote budget is
+unchanged); the size of `quotes` grows with every lock, a third index was added on the
+INSERT path (retention is KI-quote-07); no request data except the amount and assets enters
+the journal (neither source URLs nor secrets; source names are set by the operator,
+KI-quote-08).
 
-## 9. План тестов
+## 9. Test plan
 
-| Уровень | Сценарии |
+| Level | Scenarios |
 | :-- | :-- |
-| Unit (домен) | `AggregateDetailed`: разброс, ошибки порога/значений, эквивалентность `Aggregate` |
-| Unit (usecase) | аудит-поля в сохраненной котировке (фейковое хранилище): as_of, ttl, сумма, sources, spread; guard-сценарий (adjusted=true, выданный курс) |
-| Integration (storage) | round-trip новых полей (jsonb sources); UPDATE и DELETE отклоняются триггером; legacy-строка (без полей) читается |
-| E2E | расширенный `lock-quote.ps1` (аудит-поля в PostgreSQL) |
+| Unit (domain) | `AggregateDetailed`: spread, threshold/value errors, `Aggregate` equivalence |
+| Unit (usecase) | audit fields in the stored quote (fake storage): as_of, ttl, amount, sources, spread; guard scenario (adjusted=true, the issued rate) |
+| Integration (storage) | round-trip of the new fields (jsonb sources); UPDATE and DELETE rejected by the trigger; a legacy row (without the fields) is read |
+| E2E | run per `test/e2e/E2E.md` (scenario E2E_Quote_LockQuote, compose stand): audit fields in PostgreSQL |
 | Load | 14.1 |
 
-## 10. План работ и коммит
+## 10. Work plan and commit
 
-Тесты вперед (домен, usecase, integration), затем миграция, storage, домен, usecase,
-e2e, документация. Коммит `CBL-6.3: неизменяемый журнал котировок для аудита`;
-спека в том же коммите.
+Tests first (domain, usecase, integration), then migration, storage, domain, usecase, e2e,
+documentation. Commit `CBL-6.3: immutable quote journal for audit`; the spec is in the same
+commit.
 
-## 11. Открытые вопросы
+## 11. Open questions
 
-- `payment_id` в `quotes` останется NULL: в контракте CF-1 его нет; заполнение -
-  при появлении сценария в 4.2 (Payment) или отдельном RPC (CF-2+, обратно совместимо).
-- Ретеншен и партиционирование `quotes` (растет на каждую фиксацию) - KI-quote-07;
-  задача-владелец в глобальном плане пока не заведена (кандидат - волна W4, хранение).
-- Админ-чтение журнала (Back-office 12.x) - отдельный контракт, вне рамок 6.3.
-- Имена источников в `sources` не валидируются (операторская настройка): при переходе
-  к нескольким источникам добавить проверку формата имени - KI-quote-08.
+- `payment_id` in `quotes` will remain NULL: it is not in the CF-1 contract; it will be
+  populated when the scenario appears in 4.2 (Payment) or in a separate RPC (CF-2+,
+  backward compatible).
+- Retention and partitioning of `quotes` (grows with every lock) - KI-quote-07; the owning
+  task in the global plan is not registered yet (candidate - wave W4, storage).
+- Admin journal reads (Back-office 12.x) - a separate contract, outside the scope of 6.3.
+- Source names in `sources` are not validated (operator configuration): when moving to
+  multiple sources, add name format validation - KI-quote-08.
 
-## 12. Ревью (CBL-001, шаг 6)
+## 12. Review (CBL-001, step 6)
 
-Четыре независимых прохода (15.10.2026). Блокеров нет. MAJOR (AGENTS.md не обновлен -
-шаг 7: журнал, KI, trade-off, формат аудита) закрыт этим коммитом; MAJOR безопасности
-(TRUNCATE обходит row-триггер) закрыт statement-триггером и тестом; регресс
-субсекундного TTL закрыт нормализацией в `WithLockTTL`; остальные замечания закрыты
-тестами (границы CHECK, граница spread, семантика `as_of` при подмене, дубликат PK),
-уточнениями спеки и гигиеной e2e-скрипта.
+Four independent passes (15.10.2026). No blockers. The MAJOR (AGENTS.md not updated - step 7:
+journal, KI, trade-off, audit format) was closed by this commit; the security MAJOR (TRUNCATE
+bypasses the row trigger) was closed by a statement trigger and a test; the sub-second TTL
+regression was closed by normalization in `WithLockTTL`; the remaining findings were closed
+by tests (CHECK boundaries, spread boundary, `as_of` semantics on substitution, PK
+duplicate), spec clarifications and e2e script hygiene.
 
-| Роль | Ключевые замечания | Закрытие |
+| Role | Key findings | Closure |
 | :-- | :-- | :-- |
-| Без контекста | FR-2 против `NOT NULL` у `guard_adjusted`; субсекундный TTL ломает CHECK; семантика `as_of` при `guard_adjusted` не закреплена; нет теста границы spread; ссылка на несуществующую проверку дублей имен; опечатка | FR-2 уточнен; `WithLockTTL` нормализует < 1 с; тест с разными `AsOf` и решение зафиксировано в FR-4; тест границы; ссылка убрана; опечатка исправлена |
-| Архитектуры | субсекундный TTL; AGENTS не обновлен; ссылка на 14.2 без задачи-владельца; `search_path` функции; TRUNCATE/владелец вне модели угроз; нет теста дубликата PK; шапка e2e; лишняя работа `fetchRate` для GetRate | TTL нормализован; AGENTS обновлен; ссылка заменена на KI-quote-07; `search_path` захарден; границы зафиксированы в спеке; тест дубликата; шапка обновлена; аллокации приняты (NIT, наносекунды на фоне сети) |
-| С контекстом | MAJOR: AGENTS не обновлен (журнал, KI-quote-07, trade-off, формат); субсекундный TTL; нет тестов CHECK; граница spread; мертвая ветка marshal; docstring Save; `TTLSeconds` в CustomTTL-тесте; e2e NULL-диагностика | AGENTS обновлен; TTL нормализован; тесты CHECK добавлены; граница покрыта; ветка оставлена как защитная (NIT); docstring исправлен; ассерт добавлен; `coalesce` в SQL |
-| Безопасности | MAJOR: TRUNCATE не покрыт row-триггером (owner-роль в dev); SQL-конкатенация quoteId в e2e; имена источников без валидации; субсекундный TTL | statement-триггер + тест; проверка формата UUID; KI-quote-08; TTL нормализован |
+| No context | FR-2 vs `NOT NULL` on `guard_adjusted`; sub-second TTL breaks the CHECK; `as_of` semantics under `guard_adjusted` not pinned down; no spread boundary test; a reference to a non-existent duplicate name check; a typo | FR-2 clarified; `WithLockTTL` normalizes < 1 s; a test with different `AsOf` values and the decision recorded in FR-4; boundary test; the reference removed; the typo fixed |
+| Architecture | sub-second TTL; AGENTS not updated; a reference to 14.2 without an owning task; function `search_path`; TRUNCATE/owner outside the threat model; no PK duplicate test; e2e header; extra `fetchRate` work for GetRate | TTL normalized; AGENTS updated; the reference replaced with KI-quote-07; `search_path` hardened; boundaries recorded in the spec; duplicate test; header updated; allocations accepted (NIT, nanoseconds against the network) |
+| With context | MAJOR: AGENTS not updated (journal, KI-quote-07, trade-off, format); sub-second TTL; no CHECK tests; spread boundary; dead marshal branch; `Save` docstring; `TTLSeconds` in the CustomTTL test; e2e NULL diagnostics | AGENTS updated; TTL normalized; CHECK tests added; boundary covered; the branch kept as defensive (NIT); docstring fixed; assertion added; `coalesce` in SQL |
+| Security | MAJOR: TRUNCATE not covered by the row trigger (owner role in dev); SQL concatenation of quoteId in e2e; source names without validation; sub-second TTL | statement trigger + test; UUID format validation; KI-quote-08; TTL normalized |

@@ -1,4 +1,4 @@
-// Пакет source содержит адаптеры источников курса сервиса quote.
+// Package source contains rate source adapters of the quote service.
 package source
 
 import (
@@ -11,14 +11,14 @@ import (
 	"github.com/cbl/cbl-quote/internal/domain"
 )
 
-// ConfigSource задает статический источник курсов из конфигурации.
+// ConfigSource defines a static rate source from configuration.
 type ConfigSource struct {
 	name  string
 	rates map[string]domain.Rate
 	clock func() time.Time
 }
 
-// NewConfigSource разбирает JSON вида {"USDT/RUB":"95.50","BTC/USDT":"60000.10"}.
+// NewConfigSource parses JSON in the form {"USDT/RUB":"95.50","BTC/USDT":"60000.10"}.
 func NewConfigSource(name, raw string, clock func() time.Time) (*ConfigSource, error) {
 	if strings.TrimSpace(raw) == "" {
 		return nil, fmt.Errorf("%w: empty config", domain.ErrInvalidRate)
@@ -52,10 +52,10 @@ func NewConfigSource(name, raw string, clock func() time.Time) (*ConfigSource, e
 	return &ConfigSource{name: name, rates: rates, clock: clock}, nil
 }
 
-// Name возвращает имя источника.
+// Name returns the source name.
 func (s *ConfigSource) Name() string { return s.name }
 
-// Fetch возвращает курс пары из конфигурации.
+// Fetch returns the pair rate from configuration.
 func (s *ConfigSource) Fetch(_ context.Context, base, quote string) (domain.Rate, error) {
 	rate, ok := s.rates[domain.Key(base, quote)]
 	if !ok {

@@ -84,17 +84,17 @@ func TestAggregateDetailedSpread(t *testing.T) {
 	rate, spread, err := aggregator.AggregateDetailed(rates)
 	require.NoError(t, err)
 	assert.Equal(t, "95.50", rate.Value)
-	assert.Equal(t, "0.010471", spread, "(96 - 95) / 95.5 с шестью знаками")
+	assert.Equal(t, "0.010471", spread, "(96 - 95) / 95.5 with six digits")
 
 	plain, err := aggregator.Aggregate(rates)
 	require.NoError(t, err)
-	assert.Equal(t, rate.Value, plain.Value, "Aggregate остается оберткой")
+	assert.Equal(t, rate.Value, plain.Value, "Aggregate remains a wrapper")
 
 	_, spread, err = aggregator.AggregateDetailed(rates[:1])
 	require.NoError(t, err)
-	assert.Equal(t, "0.000000", spread, "один источник - нулевой разброс")
+	assert.Equal(t, "0.000000", spread, "a single source means zero spread")
 
-	// Разброс ровно на границе порога допускается (проверка строгая).
+	// Spread exactly on the threshold boundary is allowed (the check is strict).
 	boundary, boundarySpread, err := aggregator.AggregateDetailed([]domain.Rate{
 		{Base: "USDT", Quote: "RUB", Value: "100.00"},
 		{Base: "USDT", Quote: "RUB", Value: "102.00"},

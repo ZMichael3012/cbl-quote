@@ -1,5 +1,5 @@
-// Пакет grpcserver содержит gRPC-транспортный слой сервиса quote:
-// методы GetRate и LockQuote.
+// Package grpcserver contains the gRPC transport layer of the quote service:
+// the GetRate and LockQuote methods.
 package grpcserver
 
 import (
@@ -19,25 +19,25 @@ import (
 	"github.com/cbl/cbl-quote/internal/usecase"
 )
 
-// Бюджеты CBL-003 на обработку RPC (GetRate 100 мс, LockQuote 300 мс)
-// применяются как дедлайн обработчика с запасом на транспорт.
+// The CBL-003 RPC processing budgets (GetRate 100 ms, LockQuote 300 ms)
+// are applied as the handler deadline with an allowance for transport.
 const (
 	getRateBudget   = 90 * time.Millisecond
 	lockQuoteBudget = 250 * time.Millisecond
 )
 
-// Quote реализует gRPC-сервис QuoteService.
+// Quote implements the gRPC QuoteService.
 type Quote struct {
 	quotev1.UnimplementedQuoteServiceServer
 	svc *usecase.Service
 }
 
-// NewQuote создает сервер QuoteService.
+// NewQuote creates the QuoteService server.
 func NewQuote(svc *usecase.Service) *Quote {
 	return &Quote{svc: svc}
 }
 
-// GetRate возвращает агрегированный курс пары с защитой от аномалий.
+// GetRate returns the aggregated rate of the pair with anomaly protection.
 func (s *Quote) GetRate(ctx context.Context, req *quotev1.GetRateRequest) (*quotev1.GetRateResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, getRateBudget)
 	defer cancel()
@@ -52,7 +52,7 @@ func (s *Quote) GetRate(ctx context.Context, req *quotev1.GetRateRequest) (*quot
 	}, nil
 }
 
-// LockQuote фиксирует курс пары на срок TTL и сохраняет котировку для аудита.
+// LockQuote locks the rate of the pair for a TTL and saves the quote for audit.
 func (s *Quote) LockQuote(ctx context.Context, req *quotev1.LockQuoteRequest) (*quotev1.LockQuoteResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, lockQuoteBudget)
 	defer cancel()
@@ -74,7 +74,7 @@ func (s *Quote) LockQuote(ctx context.Context, req *quotev1.LockQuoteRequest) (*
 	}, nil
 }
 
-// mapError переводит доменные ошибки в ошибки платформы с классом для gRPC-кода.
+// mapError maps domain errors to platform errors with a class for the gRPC code.
 func mapError(err error) error {
 	switch {
 	case errors.Is(err, domain.ErrInvalidRate):

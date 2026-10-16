@@ -16,7 +16,7 @@ import (
 	"github.com/cbl/cbl-quote/internal/testsupport"
 )
 
-// setupRedis запускает контейнер Redis и возвращает клиент.
+// setupRedis starts a Redis container and returns a client.
 func setupRedis(t *testing.T) *redis.Client {
 	t.Helper()
 	return testsupport.RedisClient(t)
@@ -38,7 +38,7 @@ func TestIntegrationRedisCacheRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, ok)
 	assert.Equal(t, rate.Value, loaded.Value)
-	assert.True(t, rate.AsOf.Equal(loaded.AsOf), "AsOf сохраняется с точностью до наносекунд")
+	assert.True(t, rate.AsOf.Equal(loaded.AsOf), "AsOf is preserved with nanosecond precision")
 
 	last, ok, err := cache.GetLast(ctx, "USDT/RUB")
 	require.NoError(t, err)
@@ -47,7 +47,7 @@ func TestIntegrationRedisCacheRoundTrip(t *testing.T) {
 
 	_, ok, err = cache.Get(ctx, "BTC/RUB")
 	require.NoError(t, err)
-	assert.False(t, ok, "неизвестная пара - miss без ошибки")
+	assert.False(t, ok, "an unknown pair is a miss without an error")
 }
 
 func TestIntegrationRedisCacheTTLExpiry(t *testing.T) {
@@ -61,17 +61,17 @@ func TestIntegrationRedisCacheTTLExpiry(t *testing.T) {
 
 	_, ok, err := cache.Get(ctx, "USDT/RUB")
 	require.NoError(t, err)
-	require.True(t, ok, "до истечения TTL значение доступно")
+	require.True(t, ok, "the value is available before the TTL expires")
 
 	time.Sleep(500 * time.Millisecond)
 
 	_, ok, err = cache.Get(ctx, "USDT/RUB")
 	require.NoError(t, err)
-	assert.False(t, ok, "после истечения TTL свежий ключ пуст")
+	assert.False(t, ok, "after the TTL expires the fresh key is empty")
 
 	_, ok, err = cache.GetLast(ctx, "USDT/RUB")
 	require.NoError(t, err)
-	assert.True(t, ok, "last-known живет дольше свежего ключа")
+	assert.True(t, ok, "last-known lives longer than the fresh key")
 }
 
 func TestIntegrationRedisCacheCorruptedValueMiss(t *testing.T) {
@@ -83,7 +83,7 @@ func TestIntegrationRedisCacheCorruptedValueMiss(t *testing.T) {
 
 	_, ok, err := cache.Get(ctx, "USDT/RUB")
 	require.NoError(t, err)
-	assert.False(t, ok, "поврежденное значение читается как miss")
+	assert.False(t, ok, "a corrupted value is read as a miss")
 
 	require.NoError(t, client.Set(ctx, "rate:last:USDT:RUB", "95.50|bad-time", time.Minute).Err())
 	_, ok, err = cache.GetLast(ctx, "USDT/RUB")

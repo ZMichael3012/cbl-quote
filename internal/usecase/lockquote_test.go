@@ -17,14 +17,14 @@ import (
 	"github.com/cbl/cbl-quote/internal/usecase"
 )
 
-// fakeQuoteStorage реализует usecase.QuoteStorage и запоминает сохраненные котировки.
+// fakeQuoteStorage implements usecase.QuoteStorage and records saved quotes.
 type fakeQuoteStorage struct {
 	mu    sync.Mutex
 	saved []storage.Quote
 	err   error
 }
 
-// Save сохраняет котировку в память.
+// Save stores the quote in memory.
 func (s *fakeQuoteStorage) Save(_ context.Context, quote storage.Quote) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -35,7 +35,7 @@ func (s *fakeQuoteStorage) Save(_ context.Context, quote storage.Quote) error {
 	return nil
 }
 
-// last возвращает последнюю сохраненную котировку.
+// last returns the most recently saved quote.
 func (s *fakeQuoteStorage) last() (storage.Quote, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -45,12 +45,12 @@ func (s *fakeQuoteStorage) last() (storage.Quote, bool) {
 	return s.saved[len(s.saved)-1], true
 }
 
-// fixedClock возвращает постоянное время.
+// fixedClock returns a constant time.
 func fixedClock(at time.Time) func() time.Time {
 	return func() time.Time { return at }
 }
 
-// newLockService собирает сервис с хранилищем, часами и источником курса.
+// newLockService builds a service with a storage, a clock and a rate source.
 func newLockService(t *testing.T, storage *fakeQuoteStorage, clock func() time.Time, opts ...usecase.Option) *usecase.Service {
 	t.Helper()
 	aggregator, err := domain.NewAggregator("2")
@@ -86,9 +86,9 @@ func TestLockQuoteSuccess(t *testing.T) {
 	require.NoError(t, err)
 
 	_, parseErr := uuid.Parse(locked.ID)
-	require.NoError(t, parseErr, "quote_id обязан быть UUID")
+	require.NoError(t, parseErr, "quote_id must be a UUID")
 	parsedID, _ := uuid.Parse(locked.ID)
-	assert.Equal(t, uuid.Version(7), parsedID.Version(), "quote_id обязан быть UUIDv7")
+	assert.Equal(t, uuid.Version(7), parsedID.Version(), "quote_id must be a UUIDv7")
 	assert.Equal(t, "95.50", locked.Rate)
 	assert.Equal(t, now.Add(5*time.Minute), locked.LockedUntil)
 	assert.Equal(t, "USDT", locked.Base)
@@ -104,7 +104,7 @@ func TestLockQuoteSuccess(t *testing.T) {
 	assert.Equal(t, now, saved.CreatedAt)
 	assert.Nil(t, saved.PaymentID)
 
-	// Аудит-поля (6.3): метаданные фиксации заполнены.
+	// Audit fields (6.3): the lock metadata is populated.
 	require.NotNil(t, saved.AsOf)
 	assert.Equal(t, now, *saved.AsOf)
 	require.NotNil(t, saved.TTLSeconds)
@@ -114,7 +114,7 @@ func TestLockQuoteSuccess(t *testing.T) {
 	require.NotNil(t, saved.AmountMinor)
 	assert.Equal(t, int64(100_000), *saved.AmountMinor)
 	require.NotNil(t, saved.Spread)
-	assert.Equal(t, "0.000000", *saved.Spread, "один источник - нулевой разброс")
+	assert.Equal(t, "0.000000", *saved.Spread, "a single source means zero spread")
 	assert.False(t, saved.GuardAdjusted)
 	var sources []storage.QuoteSource
 	require.NoError(t, json.Unmarshal([]byte(saved.Sources), &sources))
@@ -123,7 +123,7 @@ func TestLockQuoteSuccess(t *testing.T) {
 	assert.Equal(t, "95.50", sources[0].Value)
 }
 
-// setRate заменяет курс источника для проверки защиты от аномалий.
+// setRate replaces the source rate to test anomaly protection.
 func (s *countingSource) setRate(rate domain.Rate) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -159,17 +159,17 @@ func TestLockQuoteGuardAdjustedAudit(t *testing.T) {
 		FromAsset: "USDT", ToAsset: "RUB", AmountAsset: "RUB", AmountMinor: 2,
 	})
 	require.NoError(t, err)
-	assert.Equal(t, "95.50", locked.Rate, "аномальный курс заменен последним известным")
+	assert.Equal(t, "95.50", locked.Rate, "the anomalous rate is replaced by the last known one")
 
 	saved, ok := store.last()
 	require.True(t, ok)
-	assert.True(t, saved.GuardAdjusted, "факт подмены виден в аудите")
+	assert.True(t, saved.GuardAdjusted, "the substitution is visible in the audit")
 	require.NotNil(t, saved.AsOf)
-	assert.Equal(t, now, *saved.AsOf, "as_of относится к выданному курсу, а не к отвергнутой выборке")
+	assert.Equal(t, now, *saved.AsOf, "as_of refers to the served rate, not to the rejected sample")
 	var sources []storage.QuoteSource
 	require.NoError(t, json.Unmarshal([]byte(saved.Sources), &sources))
 	require.Len(t, sources, 1)
-	assert.Equal(t, "120.00", sources[0].Value, "в аудите остаются сырые данные источников")
+	assert.Equal(t, "120.00", sources[0].Value, "raw source data remains in the audit")
 }
 
 func TestLockQuoteCustomTTL(t *testing.T) {
@@ -191,7 +191,7 @@ func TestLockQuoteCustomTTL(t *testing.T) {
 	saved, ok := store.last()
 	require.True(t, ok)
 	require.NotNil(t, saved.TTLSeconds)
-	assert.Equal(t, 120, *saved.TTLSeconds, "аудит хранит запрошенный TTL")
+	assert.Equal(t, 120, *saved.TTLSeconds, "the audit stores the requested TTL")
 }
 
 func TestLockQuoteSubSecondTTLUsesDefault(t *testing.T) {
@@ -206,12 +206,12 @@ func TestLockQuoteSubSecondTTLUsesDefault(t *testing.T) {
 		FromAsset: "USDT", ToAsset: "RUB", AmountAsset: "RUB", AmountMinor: 1,
 	})
 	require.NoError(t, err)
-	assert.Equal(t, now.Add(5*time.Minute), locked.LockedUntil, "субсекундный TTL заменяется дефолтом")
+	assert.Equal(t, now.Add(5*time.Minute), locked.LockedUntil, "a sub-second TTL is replaced by the default")
 
 	saved, ok := store.last()
 	require.True(t, ok)
 	require.NotNil(t, saved.TTLSeconds)
-	assert.Equal(t, 300, *saved.TTLSeconds, "ttl_seconds не может быть нулевым (CHECK)")
+	assert.Equal(t, 300, *saved.TTLSeconds, "ttl_seconds cannot be zero (CHECK)")
 }
 
 func TestLockQuoteRejectsTTLAboveMax(t *testing.T) {
@@ -229,7 +229,7 @@ func TestLockQuoteRejectsTTLAboveMax(t *testing.T) {
 	})
 	require.ErrorIs(t, err, domain.ErrInvalidLock)
 	_, ok := store.last()
-	assert.False(t, ok, "котировка не сохраняется при ошибке валидации")
+	assert.False(t, ok, "the quote is not saved on a validation error")
 }
 
 func TestLockQuoteRejectsInvalidAmount(t *testing.T) {
@@ -287,7 +287,7 @@ func TestLockQuoteMaxTTLAllowed(t *testing.T) {
 		FromAsset: "USDT", ToAsset: "RUB", AmountAsset: "RUB", AmountMinor: 1,
 		TTLSeconds: 900,
 	})
-	require.NoError(t, err, "TTL ровно на пределе допустим")
+	require.NoError(t, err, "a TTL exactly at the limit is allowed")
 	assert.Equal(t, now.Add(15*time.Minute), locked.LockedUntil)
 }
 
@@ -361,5 +361,5 @@ func TestLockQuoteIgnoresCachedRate(t *testing.T) {
 		FromAsset: "USDT", ToAsset: "RUB", AmountAsset: "RUB", AmountMinor: 1,
 	})
 	require.NoError(t, err)
-	assert.Equal(t, "95.50", locked.Rate, "фиксация курса не доверяет кешу и берет свежие данные")
+	assert.Equal(t, "95.50", locked.Rate, "quote locking does not trust the cache and takes fresh data")
 }

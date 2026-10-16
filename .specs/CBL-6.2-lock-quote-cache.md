@@ -1,162 +1,163 @@
-# CBL-6.2. LockQuote, GetRate и кеш курсов в Redis
+# CBL-6.2. LockQuote, GetRate, and the rate cache in Redis
 
-| Поле | Значение |
+| Field | Value |
 | :-- | :-- |
-| Эпик | E6, Quote Service |
-| Репозиторий | `cbl-quote` |
-| Размер | M |
-| Волна и параллельная группа | W1-QUOTE |
-| Зависит от | 6.1, CF-1 |
-| Версия контрактов | `cbl-protos@cf-1` (`billing/quote/v1`) |
-| Статус | done (ревью закрыто, коммит CBL-6.2) |
+| Epic | E6, Quote Service |
+| Repository | `cbl-quote` |
+| Size | M |
+| Wave and parallel group | W1-QUOTE |
+| Depends on | 6.1, CF-1 |
+| Contract version | `cbl-protos@cf-1` (`billing/quote/v1`) |
+| Status | done (review closed, commit CBL-6.2) |
 
-## 1. Контекст и цель
+## 1. Context and goal
 
-Платеж фиксирует курс на время жизни счета (`CBL-000`, поток приема платежа: Payment вызывает
-`LockQuote`, получает `quote_id`, `rate`, `locked_until`). Задача добавляет RPC `LockQuote`,
-кеш курсов в Redis с коротким TTL (T-QUOTE-02, KI-quote-02) и деградацию `GetRate` при
-недоступности источников на последнем известном курсе (edge case 6.1). Бюджеты `CBL-003`:
-`LockQuote` 300 мс, `GetRate` 100 мс.
+A payment locks the rate for the lifetime of the invoice (`CBL-000`, payment acceptance flow: Payment calls
+`LockQuote` and receives `quote_id`, `rate`, `locked_until`). The task adds the `LockQuote` RPC, the
+rate cache in Redis with a short TTL (T-QUOTE-02, KI-quote-02), and `GetRate` degradation to the
+last known rate when the sources are unavailable (edge case 6.1). `CBL-003` budgets:
+`LockQuote` 300 ms, `GetRate` 100 ms.
 
-## 2. Границы
+## 2. Boundaries
 
-In scope: `LockQuote` (валюация, TTL-пределы, запись котировки в PostgreSQL для аудита),
-кеш курсов Redis (свежий TTL и last-known для деградации), деградация при недоступности
-Redis и источников, e2e сценарий котировки (KI-quote-04).
-Out of scope: финализация аудита и линковка с платежом (6.3), внешний источник провайдера
-(14.2), k6 (14.1).
+In scope: `LockQuote` (valuation, TTL limits, quote persistence in PostgreSQL for audit),
+the Redis rate cache (fresh TTL and last-known for degradation), degradation when Redis
+and the sources are unavailable, the e2e quote scenario (KI-quote-04).
+Out of scope: audit finalization and linking with the payment (6.3), the external provider
+source (14.2), k6 (14.1).
 
-## 3. Функциональные требования
+## 3. Functional requirements
 
-FR-1. `GetRate` с кешем:
-- ключ свежего курса `rate:{BASE}:{QUOTE}` (конвенция CBL-003), TTL `RATE_CACHE_TTL` (5s);
-- hit возвращает кешированный курс с его `AsOf` без обращения к источникам; значения Redis
-  считаются недоверенным входом: проверяются формат (ParseDecimal, не более 20 цифр целой
-  части), возраст (не старше 2×TTL или 2 минут) и отсутствие времени из будущего (скос 1
-  минута); отвергнутое значение логируется и игнорируется, как miss;
-- miss: источники -> агрегация -> guard -> запись обоих ключей (best effort);
-- при недоступности всех источников возвращается last-known (`rate:last:{BASE}:{QUOTE}`,
-  TTL `RATE_LAST_TTL` default 1h) в пределах его TTL с WARN-логом; при отсутствии -
-  `ErrNoSource`; детали отказов источников остаются в логе, наружу идет только класс
-  ошибки (URL провайдера с api_key не попадает в статус);
-- ошибки Redis деградируют `GetRate` к работе без кеша (WARN с троттлингом 30 с), сервис
-  не падает: Redis - только быстрый путь (T-02, T-11); таймауты клиента ограничены
-  (dial 200 мс, read/write 300 мс, без скрытых повторов в контексте запроса).
+FR-1. `GetRate` with the cache:
+- the fresh rate key `rate:{BASE}:{QUOTE}` (CBL-003 convention), TTL `RATE_CACHE_TTL` (5s);
+- a hit returns the cached rate with its `AsOf` without calling the sources; Redis values
+  are treated as untrusted input: the format (ParseDecimal, at most 20 digits of the integer
+  part), the age (not older than 2×TTL or 2 minutes), and the absence of a time from the future
+  (skew 1 minute) are checked; a rejected value is logged and ignored as a miss;
+- a miss: sources -> aggregation -> guard -> write of both keys (best effort);
+- when all sources are unavailable, the last-known rate (`rate:last:{BASE}:{QUOTE}`,
+  TTL `RATE_LAST_TTL` default 1h) is returned within its TTL with a WARN log; if absent -
+  `ErrNoSource`; source failure details stay in the log, only the error class goes
+  out (the provider URL with api_key does not reach the status);
+- Redis errors degrade `GetRate` to operation without the cache (WARN with 30 s throttling), the
+  service does not crash: Redis is only a fast path (T-02, T-11); client timeouts are bounded
+  (dial 200 ms, read/write 300 ms, no hidden retries within the request context).
 
 FR-2. `LockQuote`:
-- валидация: `from_asset`/`to_asset` непустые, формата кода актива (2 - 16 символов
-  латиницы и цифр), не одинаковые (кроме whitelist 6.1); нарушения пары и суммы возвращают
+- validation: `from_asset`/`to_asset` non-empty, matching the asset code format (2 - 16
+  Latin letters and digits), not identical (except the 6.1 whitelist); pair and amount violations return
   `ErrInvalidLock`;
-- `ttl_seconds`: 0 - значение по умолчанию `LOCK_QUOTE_TTL` (default 300s), больше
-  `LOCK_QUOTE_MAX_TTL` (default 900s) - `ErrInvalidLock`; ровно предел допустим;
-- `amount`: asset заполнен и совпадает с `from_asset` или `to_asset` (без учета регистра),
-  `minor_units` > 0; сумма не персистится (колонки аудита - 6.3), в текст ошибок не попадает;
-- курс фиксируется только по свежим данным источников: кеш Redis недоверенный и не
-  используется для денежной фиксации (security review 6.2); при недоступности источников
-  вызывающий получает `ErrNoSource` (счет не создается на устаревшем курсе);
-- создается котировка (`quote_id` UUIDv7, `locked_until = now + ttl`, `created_at = now`)
-  и сохраняется в PostgreSQL (`quotes`); ошибка записи - `ErrLockStorage` (unavailable,
-  caller повторяет), детали БД остаются в логе, котировка не считается зафиксированной.
+- `ttl_seconds`: 0 means the default `LOCK_QUOTE_TTL` (default 300s), greater than
+  `LOCK_QUOTE_MAX_TTL` (default 900s) - `ErrInvalidLock`; exactly the limit is allowed;
+- `amount`: asset is filled and matches `from_asset` or `to_asset` (case-insensitive),
+  `minor_units` > 0; the amount is not persisted (audit columns - 6.3) and does not appear
+  in error texts;
+- the rate is locked only from fresh source data: the Redis cache is untrusted and is not
+  used for monetary locking (security review 6.2); when the sources are unavailable
+  the caller receives `ErrNoSource` (an invoice is not created at a stale rate);
+- a quote is created (`quote_id` UUIDv7, `locked_until = now + ttl`, `created_at = now`)
+  and persisted in PostgreSQL (`quotes`); a write error - `ErrLockStorage` (unavailable,
+  the caller retries), DB details stay in the log, the quote is not considered locked.
 
-FR-3. Хранилище: без новых миграций; используется таблица 6.1. Реализация кеша -
-`internal/storage/RedisCache` (go-redis/v9, ключи `rate:{BASE}:{QUOTE}` и
-`rate:last:{BASE}:{QUOTE}`). Значение кеша - десятичная строка курса плюс время `AsOf`
-(RFC 3339 nano); поврежденное значение читается как miss.
+FR-3. Storage: no new migrations; the 6.1 table is used. The cache implementation is
+`internal/storage/RedisCache` (go-redis/v9, keys `rate:{BASE}:{QUOTE}` and
+`rate:last:{BASE}:{QUOTE}`). The cache value is the decimal rate string plus the `AsOf` time
+(RFC 3339 nano); a corrupted value is read as a miss.
 
-FR-4. Конфигурация (env): `REDIS_URL` (redis:// или rediss://, приоритет) либо
-`REDIS_ADDR` + `REDIS_PASSWORD` (пусто - кеш выключен, предупреждение), `RATE_CACHE_TTL`,
-`RATE_LAST_TTL`, `LOCK_QUOTE_TTL`, `LOCK_QUOTE_MAX_TTL`; невалидное значение длительности -
-дефолт с WARN. `PG_DSN` без изменений: пусто - `LockQuote` возвращает `ErrLockStorage`.
+FR-4. Configuration (env): `REDIS_URL` (redis:// or rediss://, takes priority) or
+`REDIS_ADDR` + `REDIS_PASSWORD` (empty - cache disabled, warning), `RATE_CACHE_TTL`,
+`RATE_LAST_TTL`, `LOCK_QUOTE_TTL`, `LOCK_QUOTE_MAX_TTL`; an invalid duration value falls back
+to the default with a WARN. `PG_DSN` unchanged: empty - `LockQuote` returns `ErrLockStorage`.
 
-FR-5. Маппинг ошибок gRPC: `ErrInvalidLock` -> invalid_argument `invalid_lock_request`;
+FR-5. gRPC error mapping: `ErrInvalidLock` -> invalid_argument `invalid_lock_request`;
 `ErrLockStorage` -> unavailable `quote_storage_unavailable`; `context.DeadlineExceeded` ->
 unavailable `rate_timeout`; `context.Canceled` -> unavailable `request_canceled`;
-существующие маппинги 6.1 сохраняются.
+the existing 6.1 mappings are preserved.
 
-FR-6. Наблюдаемость: WARN с троттлингом 30 секунд на ключ (отказ Redis, источников,
-деградация); суммы и значения в логи не попадают за пределы уже принятого в 6.1 формата.
+FR-6. Observability: WARN with 30 second throttling per key (Redis failure, source failure,
+degradation); amounts and values do not enter the logs beyond the format already adopted in 6.1.
 
-## 4. Контракты
+## 4. Contracts
 
 - `QuoteService.LockQuote(LockQuoteRequest{from_asset, to_asset, amount: Money, ttl_seconds})
-  -> LockQuoteResponse{quote_id, rate, locked_until}` (`cbl-protos@cf-1`, без изменений).
-- `QuoteService.GetRate` без изменений контракта; добавляется кеширование.
-- Хранилища: PostgreSQL `quotes` (запись), Redis `rate:{BASE}:{QUOTE}` и
+  -> LockQuoteResponse{quote_id, rate, locked_until}` (`cbl-protos@cf-1`, unchanged).
+- `QuoteService.GetRate` with no contract changes; caching is added.
+- Stores: PostgreSQL `quotes` (write), Redis `rate:{BASE}:{QUOTE}` and
   `rate:last:{BASE}:{QUOTE}` (TTL).
 
-## 5. Модель данных и миграции
+## 5. Data model and migrations
 
-Новых миграций нет. Запись в `quotes`: `id`, `base_asset`, `quote_asset`, `rate`,
-`locked_until`, `created_at`; `payment_id` остается NULL до линковки в 6.3/4.2.
+No new migrations. Write to `quotes`: `id`, `base_asset`, `quote_asset`, `rate`,
+`locked_until`, `created_at`; `payment_id` remains NULL until linking in 6.3/4.2.
 
-## 6. Конечные автоматы и правила
+## 6. State machines and rules
 
-Не применимо; котировка неизменяема, живет до `locked_until` (проверка актуальности -
-потребитель).
+Not applicable; a quote is immutable and lives until `locked_until` (freshness checking is
+the consumer's responsibility).
 
 ## 7. Edge cases
 
-Совпадающие активы (whitelist), активы неверного формата или длины, TTL 0, ровно предел
-и выше предела, несоответствие актива суммы паре, нулевая и отрицательная сумма, nil Amount,
-недоступность Redis (деградация GetRate, LockQuote не затронут), недоступность всех
-источников (last-known для GetRate, ErrNoSource для LockQuote), поврежденное, устаревшее
-или из будущего значение кеша (отвергается как miss), ошибка записи в PostgreSQL,
-конкурентные `LockQuote` (независимые записи), часовой пояс (UTC).
+Identical assets (whitelist), assets of invalid format or length, TTL 0, exactly the limit
+and above the limit, mismatch of the amount asset with the pair, zero and negative amount, nil Amount,
+Redis unavailability (GetRate degradation, LockQuote unaffected), all sources
+unavailable (last-known for GetRate, ErrNoSource for LockQuote), corrupted, stale,
+or future cache value (rejected as a miss), PostgreSQL write error,
+concurrent `LockQuote` (independent writes), time zone (UTC).
 
-## 8. Нефункциональные требования
+## 8. Non-functional requirements
 
-- Бюджеты `CBL-003` применяются дедлайном обработчика: `GetRate` 90 мс, `LockQuote`
-  250 мс; превышение - `rate_timeout` (unavailable), а не ожидание 3 секунд источника.
-- Деградация без ошибок процесса: Redis и источники могут быть недоступны.
-- Деньги: курс только десятичная строка, float запрещен; суммы int64 без изменений.
-- Покрытие unit+integration не ниже 80%; Redis-сценарии - на реальном Redis
+- `CBL-003` budgets are enforced by the handler deadline: `GetRate` 90 ms, `LockQuote`
+  250 ms; exceeding them - `rate_timeout` (unavailable) instead of waiting 3 seconds for the source.
+- Degradation without process errors: Redis and the sources may be unavailable.
+- Money: the rate is only a decimal string, float is forbidden; amounts remain int64 unchanged.
+- Unit+integration coverage at least 80%; Redis scenarios run on real Redis
   (testcontainers, CBL-001).
 
-## 9. План тестов
+## 9. Test plan
 
-| Уровень | Сценарии |
+| Level | Scenarios |
 | :-- | :-- |
-| Smoke | `go build ./...`, compose up: healthz, миграции |
-| Unit | cache-hit без вызова источника; отвержение значений из будущего и устаревших; fallback last-known и его read-ошибка; best-effort запись кеша при ошибке Redis; валидации LockQuote (TTL 0/предел/выше, актив суммы, нулевая сумма, identical pair, whitelist, формат актива); UUIDv7; часы; ошибка хранилища; троттлинг WARN |
-| Integration | testcontainers: RedisCache round-trip, TTL-истечение, поврежденное значение = miss; сервис с реальными Redis+PostgreSQL: второй GetRate не дергает источник, деградация на last-known, LockQuote пишет строку в `quotes` |
-| E2E локальный | `test/e2e/lock-quote.ps1` (compose + grpcurl, прогон в 6.2): GetRate, LockQuote, строка в PostgreSQL (KI-quote-04 закрыт) |
+| Smoke | `go build ./...`, compose up: healthz, migrations |
+| Unit | cache hit without a source call; rejection of future and stale values; last-known fallback and its read error; best-effort cache write on a Redis error; LockQuote validations (TTL 0/limit/above, amount asset, zero amount, identical pair, whitelist, asset format); UUIDv7; clock; storage error; WARN throttling |
+| Integration | testcontainers: RedisCache round-trip, TTL expiry, corrupted value = miss; the service with real Redis+PostgreSQL: the second GetRate does not hit the source, degradation to last-known, LockQuote writes a row into `quotes` |
+| Local E2E | run per `test/e2e/E2E.md` (scenario E2E_Quote_LockQuote, compose stand): GetRate, LockQuote, a row in PostgreSQL (KI-quote-04 closed) |
 | Load | 14.1 |
 
-## 10. План работ и коммит
+## 10. Work plan and commit
 
-1. Спека, тесты (unit + integration), затем реализация: `domain` ошибки, `storage.RedisCache`,
-   `usecase` кеш и `LockQuote`, транспорт, main и env.
-2. Четыре ревью-прохода, AGENTS.md (trade-offs, KI, журнал), линтеры, e2e.
-3. Коммит `CBL-6.2: LockQuote и кеш курсов в Redis`; спека в том же коммите.
+1. Spec, tests (unit + integration), then implementation: `domain` errors, `storage.RedisCache`,
+   `usecase` cache and `LockQuote`, transport, main, and env.
+2. Four review passes, AGENTS.md (trade-offs, KI, journal), linters, e2e.
+3. Commit `CBL-6.2: LockQuote and the rate cache in Redis`; the spec is in the same commit.
 
-## 11. Открытые вопросы и решения
+## 11. Open questions and decisions
 
-- ADR: кеш Redis недоверенный (значения проверяются по возрасту и формату), а `LockQuote`
-  фиксирует только свежий курс источников: отравленный ключ кеша не может попасть в
-  денежную котировку (security review 6.2, blocker закрыт этим решением).
-- ADR: last-known TTL 1h выбран как окно деградации GetRate при аварии источников;
-  для LockQuote недоступность источников - явная ошибка, устаревший курс не фиксируется.
-- ADR: WARN-логи троттлятся 30 секунд на ключ, чтобы отказ зависимости не создавал
-  поток логов при высокой нагрузке.
-- Принято с ограничением: singleflight на miss не вводится; всплеск обращений к источникам
-  ограничен коротким TTL кеша (5s), замер и решение - 14.1.
-- Принято с ограничением: конкурентная запись last-known может откатить значение к более
-  раннему `AsOf` в пределах соседних обновлений; guard ограничивает отклонения, влияние - 14.1.
-- KI-quote-06: в dev Redis защищен паролем, но без TLS; в prod - ACL и приватная сеть
-  (0.6); поддержка rediss:// уже реализована через `REDIS_URL`.
-- Открытый вопрос: колонки суммы котировки для аудита - решение в 6.3 (новая миграция,
-  если требуется сверка сумм).
-- Открытый вопрос: линковка `payment_id` в `quotes` без RPC - 6.3.
+- ADR: the Redis cache is untrusted (values are checked by age and format), and `LockQuote`
+  locks only the fresh source rate: a poisoned cache key cannot enter a
+  monetary quote (security review 6.2, the blocker was closed by this decision).
+- ADR: the last-known TTL of 1h was chosen as the GetRate degradation window during a source outage;
+  for LockQuote, source unavailability is an explicit error and a stale rate is not locked.
+- ADR: WARN logs are throttled to 30 seconds per key so that a dependency failure does not create
+  a log flood under high load.
+- Accepted with a limitation: singleflight on a miss is not introduced; a burst of calls to the sources
+  is bounded by the short cache TTL (5s), measurement and decision - 14.1.
+- Accepted with a limitation: a concurrent last-known write may roll the value back to an earlier
+  `AsOf` within adjacent updates; the guard bounds the deviations, impact - 14.1.
+- KI-quote-06: in dev Redis is protected by a password but without TLS; in prod - ACL and a private network
+  (0.6); rediss:// support is already implemented via `REDIS_URL`.
+- Open question: the quote amount columns for audit - decided in 6.3 (a new migration
+  if amount reconciliation is required).
+- Open question: linking `payment_id` in `quotes` without an RPC - 6.3.
 
-## 12. Ревью (CBL-001, шаг 6)
+## 12. Review (CBL-001, step 6)
 
-Четыре независимых прохода (14.10.2026). Блокер безопасности (отравляемый кеш как источник
-курса для LockQuote) закрыт сменой дизайна: фиксация курса идет только по свежим данным,
-значения кеша валидируются по возрасту и формату. Все major и minor закрыты.
+Four independent passes (14.10.2026). The security blocker (a poisonable cache as the rate source
+for LockQuote) was closed by a design change: the rate is locked only from fresh data,
+and cache values are validated by age and format. All major and minor findings are closed.
 
-| Роль | Ключевые замечания | Закрытие |
+| Role | Key findings | Closure |
 | :-- | :-- | :-- |
-| Без контекста | таймауты Redis по умолчанию (3 - 5 с) нарушают бюджеты; e2e-артефакта нет; UUID проверялся без версии; пары ошибок для LockQuote | таймауты клиента 200/300 мс и дедлайны обработчиков 90/250 мс; `test/e2e/lock-quote.ps1` + `make e2e`; проверка UUIDv7; единый `ErrInvalidLock` |
-| Архитектуры | бюджеты не обеспечены на cache-miss; артефакт e2e; ключи расходились с CBL-003; нет trade-off про usecase -> storage; границы 6.2/6.3; WARN-шторм; нет singleflight; last-known возраст не виден в аудите | дедлайны обработчиков; ключи приведены к CBL-003; T-QUOTE-05; уточнен план 6.3; троттлинг WARN; singleflight и откат last-known - принятые ограничения с пересмотром в 14.1; `rate_as_of` - кандидат 6.3 |
-| С контекстом | статус/журнал опережали ревью; дубли package-комментариев; env-список расходился; WARN-шторм; копии fake в тестах | статусы и журнал синхронизированы; комментарии пакетов сведены в doc.go; env-список исправлен (MIGRATIONS_DIR, REDIS_URL/PASSWORD, без Kafka); троттлинг; копии фейков оставлены по пакетам |
-| Безопасности (BLOCK снят) | отравляемый кеш попадал в денежную фиксацию; Redis без пароля/TLS; дефолтные таймауты go-redis; детали ошибок источников (URL с api_key) уходили клиенту и в логи; суммы в текстах ошибок | LockQuote только по свежим данным + валидация кеша (возраст, формат, 20 цифр); REDIS_URL/PASSWORD, requirepass в compose, rediss:// для prod (KI-quote-06); таймауты и ContextTimeoutEnabled; санитизация `url.Error` и ошибок PG, детали только в логе; суммы убраны из ошибок |
+| No context | default Redis timeouts (3 - 5 s) violate the budgets; there is no e2e artifact; the UUID was checked without the version; error pairs for LockQuote | client timeouts 200/300 ms and handler deadlines 90/250 ms; `test/e2e/lock-quote.ps1` + `make e2e`; UUIDv7 check; a single `ErrInvalidLock` |
+| Application architecture | budgets were not guaranteed on a cache miss; the e2e artifact; keys diverged from CBL-003; no trade-off about usecase -> storage; 6.2/6.3 boundaries; WARN storm; no singleflight; the last-known age was not visible in the audit | handler deadlines; keys aligned with CBL-003; T-QUOTE-05; the 6.3 plan clarified; WARN throttling; singleflight and the last-known rollback - accepted limitations to be revisited in 14.1; `rate_as_of` - a 6.3 candidate |
+| With context | the status/journal ran ahead of the review; duplicate package comments; the env list diverged; WARN storm; copies of fakes in tests | statuses and the journal synchronized; package comments consolidated in doc.go; the env list corrected (MIGRATIONS_DIR, REDIS_URL/PASSWORD, no Kafka); throttling; fake copies kept per package |
+| Security (BLOCK lifted) | the poisonable cache entered monetary locking; Redis without a password/TLS; default go-redis timeouts; source error details (URL with api_key) leaked to the client and into the logs; amounts in error texts | LockQuote only from fresh data + cache validation (age, format, 20 digits); REDIS_URL/PASSWORD, requirepass in compose, rediss:// for prod (KI-quote-06); timeouts and ContextTimeoutEnabled; sanitization of `url.Error` and PG errors, details only in the log; amounts removed from errors |

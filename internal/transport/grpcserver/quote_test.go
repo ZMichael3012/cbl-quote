@@ -107,18 +107,18 @@ func configSourceWithName(t *testing.T, name, raw string) domain.RateSource {
 	return configSource
 }
 
-// fakeQuoteStorage реализует usecase.QuoteStorage для транспортных тестов.
+// fakeQuoteStorage implements usecase.QuoteStorage for transport tests.
 type fakeQuoteStorage struct {
 	saved []storage.Quote
 }
 
-// Save запоминает котировку.
+// Save records the quote.
 func (s *fakeQuoteStorage) Save(_ context.Context, quote storage.Quote) error {
 	s.saved = append(s.saved, quote)
 	return nil
 }
 
-// lockQuoteRequest собирает корректный запрос фиксации курса.
+// lockQuoteRequest builds a valid quote lock request.
 func lockQuoteRequest(ttl uint32) *quotev1.LockQuoteRequest {
 	return &quotev1.LockQuoteRequest{
 		FromAsset:  "USDT",

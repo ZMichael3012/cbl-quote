@@ -1,5 +1,5 @@
-// main запускает HTTP- и gRPC-сервис quote платформы CBL:
-// агрегацию курсов источников и защиту от аномальных значений.
+// main starts the HTTP and gRPC service of the CBL platform quote:
+// aggregation of source rates and protection against anomalous values.
 package main
 
 import (
@@ -37,8 +37,8 @@ import (
 	"github.com/cbl/cbl-quote/internal/usecase"
 )
 
-// main поднимает gRPC-сервер QuoteService, административный HTTP-сервер
-// и завершает работу по SIGINT/SIGTERM.
+// main starts the QuoteService gRPC server and the administrative HTTP server
+// and shuts down on SIGINT/SIGTERM.
 func main() {
 	log, err := zap.NewProduction()
 	if err != nil {
@@ -66,7 +66,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// PG_DSN опционален: GetRate работает без базы, LockQuote без хранилища недоступен.
+	// PG_DSN is optional: GetRate works without a database, LockQuote is unavailable without storage.
 	var repo *storage.Repository
 	if dsn := os.Getenv("PG_DSN"); dsn != "" {
 		db, openErr := gorm.Open(postgres.Open(dsn), &gorm.Config{})
@@ -84,8 +84,8 @@ func main() {
 		log.Warn("PG_DSN is empty: LockQuote will be unavailable")
 	}
 
-	// Redis - только быстрый путь кеша курсов (T-02): его недоступность
-	// деградирует GetRate к источникам и не роняет сервис.
+	// Redis is only the fast path of the rate cache (T-02): its unavailability
+	// degrades GetRate to the sources and does not take the service down.
 	var cache usecase.RateCache
 	if redisOptions := redisOptionsFromEnv(log); redisOptions != nil {
 		redisClient := redis.NewClient(redisOptions)
@@ -190,7 +190,7 @@ func main() {
 	log.Info("shutdown finished")
 }
 
-// buildSources собирает источники курса по конфигурации RATE_SOURCE.
+// buildSources assembles rate sources according to the RATE_SOURCE configuration.
 func buildSources(log *zap.Logger) ([]domain.RateSource, error) {
 	switch rateSource := getenv("RATE_SOURCE", "config"); rateSource {
 	case "config":
@@ -215,7 +215,7 @@ func buildSources(log *zap.Logger) ([]domain.RateSource, error) {
 	}
 }
 
-// splitPairs разбирает список пар вида "USDT/USD,BTC/USD".
+// splitPairs parses a pair list in the form "USDT/USD,BTC/USD".
 func splitPairs(raw string) []string {
 	parts := strings.Split(raw, ",")
 	pairs := make([]string, 0, len(parts))
@@ -227,7 +227,7 @@ func splitPairs(raw string) []string {
 	return pairs
 }
 
-// metricsHandler отдает заглушку метрик до задачи 0.7.
+// metricsHandler serves a metrics placeholder until task 0.7.
 func metricsHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/metrics", func(w http.ResponseWriter, _ *http.Request) {
@@ -237,9 +237,9 @@ func metricsHandler() http.Handler {
 	return mux
 }
 
-// redisOptionsFromEnv собирает опции Redis: REDIS_URL (redis:// или rediss://)
-// или REDIS_ADDR с опциональным REDIS_PASSWORD. Таймауты ограничены бюджетом RPC,
-// чтобы недоступный Redis не выводил GetRate за пределы 100 мс.
+// redisOptionsFromEnv builds Redis options: REDIS_URL (redis:// or rediss://)
+// or REDIS_ADDR with an optional REDIS_PASSWORD. Timeouts are bounded by the RPC
+// budget so that an unavailable Redis does not push GetRate beyond 100 ms.
 func redisOptionsFromEnv(log *zap.Logger) *redis.Options {
 	options := &redis.Options{}
 	switch {
@@ -264,7 +264,7 @@ func redisOptionsFromEnv(log *zap.Logger) *redis.Options {
 	return options
 }
 
-// getenv возвращает значение переменной окружения или значение по умолчанию.
+// getenv returns the environment variable value or the default value.
 func getenv(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
@@ -272,8 +272,8 @@ func getenv(key, fallback string) string {
 	return fallback
 }
 
-// durationEnv читает длительность из переменной окружения;
-// невалидное значение заменяется значением по умолчанию с предупреждением.
+// durationEnv reads a duration from an environment variable;
+// an invalid value is replaced with the default and a warning.
 func durationEnv(log *zap.Logger, key string, fallback time.Duration) time.Duration {
 	raw := os.Getenv(key)
 	if raw == "" {

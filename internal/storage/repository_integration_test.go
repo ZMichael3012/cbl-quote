@@ -101,10 +101,10 @@ func TestIntegrationQuotesAppendOnly(t *testing.T) {
 	assert.Contains(t, truncateErr.Error(), "append-only")
 
 	duplicateErr := repo.Save(context.Background(), quote)
-	require.Error(t, duplicateErr, "повторная вставка того же id отклоняется уникальностью")
+	require.Error(t, duplicateErr, "a repeated insert of the same id is rejected by the uniqueness constraint")
 
 	loaded, err := repo.Get(context.Background(), id)
-	require.NoError(t, err, "журнал неизменяем: строка на месте")
+	require.NoError(t, err, "the journal is immutable: the row is in place")
 	assert.Equal(t, "95.50", loaded.Rate)
 }
 
@@ -121,7 +121,7 @@ func TestIntegrationQuotesAuditCheckConstraints(t *testing.T) {
 	for name, quote := range tests {
 		t.Run(name, func(t *testing.T) {
 			err := repo.Save(context.Background(), quote)
-			require.Error(t, err, "CHECK-ограничение БД - второй барьер аудита")
+			require.Error(t, err, "a DB CHECK constraint is the second audit barrier")
 		})
 	}
 }
@@ -130,7 +130,7 @@ func TestIntegrationLegacyQuoteReadable(t *testing.T) {
 	db := setupQuoteDB(t)
 	repo := storage.NewRepository(db)
 
-	// Строка dev-стенда до 6.3: аудит-колонки пустые и не мешают чтению.
+	// A dev stand row from before 6.3: the audit columns are empty and do not hinder reading.
 	id := uuid.Must(uuid.NewV7()).String()
 	require.NoError(t, db.Exec(
 		`INSERT INTO quotes (id, base_asset, quote_asset, rate, locked_until, created_at) VALUES (?, 'USDT', 'RUB', '95.50', now() + interval '5 minutes', now())`,

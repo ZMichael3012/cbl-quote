@@ -1,4 +1,4 @@
-.PHONY: build test test-integration vet lint fmt vuln up down e2e
+.PHONY: build test test-integration vet lint fmt vuln up down
 
 build:
 	go build ./...
@@ -9,14 +9,15 @@ test:
 test-integration:
 	go test -tags integration -count=1 ./internal/...
 
-# e2e поднимает compose-стенд и проверяет LockQuote/GetRate через grpcurl (CBL-6.2).
-e2e:
-	powershell -NoProfile -File test/e2e/lock-quote.ps1
+# E2E: compose stand runs follow the test/e2e/E2E.md instruction (scenario
+# E2E_Quote_LockQuote; artifacts go to test/e2e/.runs/<UTC mark>/); there are
+# no PowerShell run scripts.
 
 vet:
 	go vet ./...
 
-# lint монтирует каталог services/ целиком: replace на ../cbl-kit резолвится в контейнере.
+# lint mounts the whole services/ directory: the replace directive to ../cbl-kit
+# resolves inside the container.
 lint:
 	docker run --rm -v "$(CURDIR)/..":/src -w /src/$(notdir $(CURDIR)) golangci/golangci-lint:latest-alpine golangci-lint run ./...
 

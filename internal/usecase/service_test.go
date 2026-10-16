@@ -22,7 +22,7 @@ type fakeSource struct {
 
 func (f *fakeSource) Name() string { return f.name }
 
-// Fetch возвращает заранее заданный курс или ошибку.
+// Fetch returns a preset rate or an error.
 func (f *fakeSource) Fetch(_ context.Context, _, _ string) (domain.Rate, error) {
 	if f.err != nil {
 		return domain.Rate{}, f.err
@@ -85,7 +85,7 @@ type mutableSource struct {
 
 func (m *mutableSource) Name() string { return m.name }
 
-// Fetch возвращает текущее значение курса источника.
+// Fetch returns the current rate value of the source.
 func (m *mutableSource) Fetch(_ context.Context, _, _ string) (domain.Rate, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
