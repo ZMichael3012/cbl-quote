@@ -42,6 +42,7 @@ services:
       RATE_SOURCE: config
       RATE_CONFIG: '{"USDT/RUB":"95.50","BTC/USDT":"60000.00"}'
       RATE_ALLOWED_IDENTICAL_PAIRS: USDT/USD
+      RATE_MIN_AMOUNTS: ${RATE_MIN_AMOUNTS-}
     ports:
       - "8070:8070"
       - "9070:9070"

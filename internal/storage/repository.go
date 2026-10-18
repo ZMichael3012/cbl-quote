@@ -41,6 +41,8 @@ type Quote struct {
 	AmountAsset *string `gorm:"column:amount_asset"`
 	// AmountMinor sets the request amount in minor units.
 	AmountMinor *int64 `gorm:"column:amount_minor"`
+	// MinAmountMinor sets the pair minimum applied to the request (17.10); NULL without a minimum.
+	MinAmountMinor *int64 `gorm:"column:min_amount_minor"`
 	// Sources sets the JSON array of sources that provided the rate (audit).
 	Sources string `gorm:"column:sources;type:jsonb"`
 	// Spread sets the relative spread of the sources as a decimal string.

@@ -20,7 +20,7 @@ import (
 )
 
 // newIntegrationService builds a service on real PostgreSQL and Redis.
-func newIntegrationService(t *testing.T, source domain.RateSource, cacheTTL, lastTTL time.Duration) (*usecase.Service, *storage.Repository) {
+func newIntegrationService(t *testing.T, source domain.RateSource, cacheTTL, lastTTL time.Duration, opts ...usecase.Option) (*usecase.Service, *storage.Repository) {
 	t.Helper()
 	db := testsupport.PostgresDB(t, "quote", filepath.Join("..", "..", "migrations"))
 	repo := storage.NewRepository(db)
@@ -31,12 +31,39 @@ func newIntegrationService(t *testing.T, source domain.RateSource, cacheTTL, las
 	require.NoError(t, err)
 	guard, err := domain.NewAnomalyGuard("10")
 	require.NoError(t, err)
-	service := usecase.NewService([]domain.RateSource{source}, aggregator, guard, nil,
+	allOpts := []usecase.Option{
 		usecase.WithRateCache(cache, cacheTTL, lastTTL),
 		usecase.WithQuoteStorage(repo),
 		usecase.WithLockTTL(5*time.Minute, 15*time.Minute),
-	)
+	}
+	allOpts = append(allOpts, opts...)
+	service := usecase.NewService([]domain.RateSource{source}, aggregator, guard, nil, allOpts...)
 	return service, repo
+}
+
+func TestIntegrationLockQuoteMinAmountPersisted(t *testing.T) {
+	source := &countingSource{
+		name: "a",
+		rate: domain.Rate{Base: "USDT", Quote: "RUB", Value: "95.50", AsOf: time.Now().UTC()},
+	}
+	service, repo := newIntegrationService(t, source, 10*time.Second, time.Hour,
+		usecase.WithMinAmounts(map[string]usecase.MinAmount{"USDT/RUB": {Asset: "RUB", Minor: 100_000}}))
+	ctx := context.Background()
+
+	_, err := service.LockQuote(ctx, usecase.LockQuoteRequest{
+		FromAsset: "USDT", ToAsset: "RUB", AmountAsset: "RUB", AmountMinor: 99_999,
+	})
+	require.ErrorIs(t, err, domain.ErrInvalidLock, "the below-minimum amount is rejected")
+
+	locked, err := service.LockQuote(ctx, usecase.LockQuoteRequest{
+		FromAsset: "USDT", ToAsset: "RUB", AmountAsset: "RUB", AmountMinor: 100_000,
+	})
+	require.NoError(t, err)
+
+	saved, err := repo.Get(ctx, locked.ID)
+	require.NoError(t, err)
+	require.NotNil(t, saved.MinAmountMinor)
+	assert.Equal(t, int64(100_000), *saved.MinAmountMinor, "the applied minimum is recorded for audit")
 }
 
 // setError sets the source error for degradation scenarios in integration tests.

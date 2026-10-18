@@ -31,6 +31,10 @@ the `app` profile; the config rate source provides the stand rate USDT/RUB = 95.
    (output to `compose-down.log`; the first run has nothing to stop).
 3. Start the stand: `docker compose -p cbl-quote-e2e-<MARK> -f deploy/docker-compose.yml --profile app up -d --build --wait`
    (`compose-up.log`); `docker compose ps` into `compose-ps.txt`.
+   Set `RATE_MIN_AMOUNTS=USDT/RUB@RUB:100000` in the environment before the
+   start (the compose file passes the host value into the quote container; the
+   default empty value disables the minimums, but the extended scenario expects
+   the minimum and the audit check below).
 4. Wait for `GET http://localhost:8070/healthz` = 200 (up to 60 s, 2 s interval) and
    `readyz` = 200 (curl.exe).
 5. Run the scenario checks (section 4), recording every OK/FAIL line in
@@ -57,10 +61,16 @@ Utility notes:
    - `rate` is exactly `95.50`;
    - `lockedUntil` is present.
 4. Persistence: `SELECT count(*) FROM quotes WHERE id = '<quoteId>'` returns `1`.
-5. Audit fields (6.3):
-   `SELECT (as_of IS NOT NULL)::text || ',' || (amount_minor IS NOT NULL)::text || ',' || (jsonb_array_length(coalesce(sources, '[]'::jsonb)) > 0)::text || ',' || guard_adjusted::text || ',' || (spread IS NOT NULL)::text FROM quotes WHERE id = '<quoteId>'`
-   must be exactly `true,true,true,false,true`.
-6. Checks go to `lock-quote-checks.txt`.
+5. Audit fields (6.3, extended by 17.10):
+   `SELECT (as_of IS NOT NULL)::text || ',' || (amount_minor IS NOT NULL)::text || ',' || (jsonb_array_length(coalesce(sources, '[]'::jsonb)) > 0)::text || ',' || guard_adjusted::text || ',' || (spread IS NOT NULL)::text || ',' || (min_amount_minor IS NOT NULL)::text || ',' || coalesce(min_amount_minor::text, '') FROM quotes WHERE id = '<quoteId>'`
+   must be exactly `true,true,true,false,true,true,100000`.
+6. A lock below the minimum answers `InvalidArgument`:
+   `{ "from_asset": "USDT", "to_asset": "RUB", "amount": { "minor_units": 99999, "asset": "RUB", "decimals": 2 }, "ttl_seconds": 120 }`
+   (the error text mentions `minimum`), and
+   `SELECT count(*) FROM quotes WHERE amount_minor = 99999` returns `0`.
+   A lock with the other pair side as the amount asset (`USDT`) is rejected
+   too: the minimum is bound to the configured asset.
+7. Checks go to `lock-quote-checks.txt`.
 
 ## 5. Mandatory run artifacts
 

@@ -90,6 +90,7 @@ type Service struct {
 	cacheTTL   time.Duration
 	lastTTL    time.Duration
 	quotes     QuoteStorage
+	minAmounts map[string]MinAmount
 	lockTTL    time.Duration
 	lockMaxTTL time.Duration
 	clock      func() time.Time
@@ -123,6 +124,21 @@ func WithRateCache(cache RateCache, ttl, lastTTL time.Duration) Option {
 		s.lastTTL = lastTTL
 		if s.lastTTL <= 0 {
 			s.lastTTL = defaultLastTTL
+		}
+	}
+}
+
+// WithMinAmounts sets the per-pair minimum amounts with their explicit amount
+// asset (RATE_MIN_AMOUNTS, 17.10): a pair absent from the map has no minimum.
+func WithMinAmounts(minimums map[string]MinAmount) Option {
+	return func(s *Service) {
+		if len(minimums) == 0 {
+			s.minAmounts = nil
+			return
+		}
+		s.minAmounts = make(map[string]MinAmount, len(minimums))
+		for pair, amount := range minimums {
+			s.minAmounts[pair] = amount
 		}
 	}
 }
@@ -380,6 +396,18 @@ func (s *Service) LockQuote(ctx context.Context, req LockQuoteRequest) (LockedQu
 	if ttl > s.lockMaxTTL {
 		return LockedQuote{}, fmt.Errorf("%w: ttl %s exceeds max %s", domain.ErrInvalidLock, ttl, s.lockMaxTTL)
 	}
+	minAmount, hasMin := s.minAmounts[pair]
+	if hasMin {
+		// The minimum is expressed in one explicit pair side: a request in the
+		// other side has a different scale and cannot be compared, so it is
+		// rejected instead of silently bypassing the limit.
+		if !strings.EqualFold(amountAsset, minAmount.Asset) {
+			return LockedQuote{}, fmt.Errorf("%w: amount asset %q must be %s for the configured minimum", domain.ErrInvalidLock, amountAsset, minAmount.Asset)
+		}
+		if req.AmountMinor < minAmount.Minor {
+			return LockedQuote{}, fmt.Errorf("%w: amount %d below minimum %d", domain.ErrInvalidLock, req.AmountMinor, minAmount.Minor)
+		}
+	}
 	if s.quotes == nil {
 		return LockedQuote{}, fmt.Errorf("%w: quotes storage is not configured", domain.ErrLockStorage)
 	}
@@ -420,6 +448,10 @@ func (s *Service) LockQuote(ctx context.Context, req LockQuoteRequest) (LockedQu
 		Sources:       string(sourcesJSON),
 		Spread:        &spread,
 		GuardAdjusted: meta.guardAdjusted,
+	}
+	if hasMin {
+		minRecorded := minAmount.Minor
+		record.MinAmountMinor = &minRecorded
 	}
 	if err := s.quotes.Save(ctx, record); err != nil {
 		// DB error details stay in the log: only the class is returned.

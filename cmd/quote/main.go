@@ -103,6 +103,19 @@ func main() {
 			durationEnv(log, "LOCK_QUOTE_MAX_TTL", 15*time.Minute),
 		),
 	}
+	// The per-pair minimums are configuration: an invalid value refuses the
+	// start instead of silently disabling the limit (fail-fast, 17.10).
+	minAmounts, minErr := usecase.ParseMinAmounts(os.Getenv("RATE_MIN_AMOUNTS"))
+	if minErr != nil {
+		log.Error("invalid RATE_MIN_AMOUNTS", zap.Error(minErr))
+		os.Exit(1)
+	}
+	opts = append(opts, usecase.WithMinAmounts(minAmounts))
+	if len(minAmounts) > 0 {
+		log.Info("quote minimums configured", zap.Int("pairs", len(minAmounts)))
+	} else {
+		log.Warn("RATE_MIN_AMOUNTS is empty: pair minimums disabled")
+	}
 	if cache != nil {
 		opts = append(opts, usecase.WithRateCache(cache,
 			durationEnv(log, "RATE_CACHE_TTL", 5*time.Second),

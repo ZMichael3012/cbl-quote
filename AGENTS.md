@@ -60,6 +60,8 @@ Variables (applicable to the service): `HTTP_ADDR`, `GRPC_ADDR`, `METRICS_ADDR`,
 `REDIS_PASSWORD`, `RATE_SOURCE`, `RATE_CONFIG`, `RATE_HTTP_URL`, `RATE_HTTP_NAME`,
 `RATE_MAX_SPREAD_PCT` (default 2), `RATE_ANOMALY_PCT` (default 10),
 `RATE_ANOMALY_RESET` (default 15m), `RATE_ALLOWED_IDENTICAL_PAIRS`,
+`RATE_MIN_AMOUNTS` (CSV `BASE/QUOTE:MINOR`, the minimum in minor units of the
+request amount asset; empty - no minimums; an invalid value refuses startup),
 `RATE_CACHE_TTL` (default 5s), `RATE_LAST_TTL` (default 1h), `LOCK_QUOTE_TTL` (default 5m),
 `LOCK_QUOTE_MAX_TTL` (default 15m).
 
@@ -94,6 +96,7 @@ consumer lag; dashboards after task 0.7.
 | T-QUOTE-04 | `LockQuote` is not idempotent at the RPC level (there is no key in contract CF-1) | simple contract | a repeated call creates a new quote | no effect on money; payment idempotency is provided by Billing API/Payment (4.x) |
 | T-QUOTE-05 | the usecase imports storage (`storage.Quote` in the QuoteStorage signature) | no extra layer mapping, precedent ledger T-LED-01 | layer boundaries are blurred | the RateCache/QuoteStorage interfaces are declared on the consumer side; revision - as the number of storages grows |
 | T-QUOTE-06 | The `quotes` journal is append-only (UPDATE/DELETE/TRUNCATE triggers), the audit is complete (sources, spread, amount, guard substitution flag) | immutable evidence of the rate lock, a second barrier at the DB level | the table grows with every lock; a third index on INSERT; DB owner level bypass (`DISABLE TRIGGER`) is outside the dev threat model; source names in the audit are not validated | retention/partitioning - KI-quote-07; prod roles with INSERT/SELECT rights - 0.4/0.6; name validation - KI-quote-08 |
+| T-QUOTE-07 | Per-pair minimums (17.10): `RATE_MIN_AMOUNTS` (CSV `BASE/QUOTE:MINOR`, minor units of the request amount asset) are parsed fail-fast at startup and checked in `LockQuote` before the rate fetch; the applied minimum is stored in `quotes.min_amount_minor` (NULL without a minimum) | provider limits are enforced before a rate is locked; the audit shows the policy that applied; no contract change | the minimum is expressed in the amount asset of the request (either pair side), so configuration must state the pair and the intended amount asset; per-pair limits are static until restart; the provider estimate feed (a dynamic provider-side limit source) is deferred (KI-quote-09) | the parser rejects invalid pairs, non-positive values and duplicates; boundary and audit cases are pinned by P-01..P-05/I-01 and the extended e2e scenario |
 
 ## 9. Known issues
 
@@ -107,6 +110,7 @@ consumer lag; dashboards after task 0.7.
 | KI-quote-06 | Redis in dev without TLS (a password is set); in prod there is no ACL and private network | the theoretical cache poisoning vector is closed by validation; keys can be written from a foreign network | rediss:// is already supported (`REDIS_URL`); ACL, private network and TLS in prod - 0.6 | open |
 | KI-quote-07 | The `quotes` journal grows with every lock; retention and partitioning are not defined | DB and backup growth; reads by PK/indexes are not affected by growth | retention/partitioning when planning storage growth (wave W4, the owning task is not registered yet) | open |
 | KI-quote-08 | The source name (`RATE_HTTP_NAME`, `config`) is not validated and enters the audit `sources[].name` as is | an operational error (a URL/token in the name) may enter the audit journal | name format validation when moving to multiple sources | open |
+| KI-quote-09 | The provider estimate feed is not connected: quote minimums are static per-pair configuration (`RATE_MIN_AMOUNTS`), and the provider-side estimated amount/limits (`provider`, `provider_rate` audit fields) have no source contract yet | dynamic provider limits (per asset/network changes, estimate-based minimums) need a restart with new configuration; the audit cannot show the provider estimate | a provider estimate source (connector estimate RPC or provider API) with new audit columns `provider`/`provider_rate` in the quote journal; until then the operator manages `RATE_MIN_AMOUNTS` | open |
 
 ## 10. Task journal
 
@@ -116,6 +120,7 @@ consumer lag; dashboards after task 0.7.
 | CBL-6.2 | 2026-10-14 | done, review closed (LockQuote on fresh data, Redis cache with untrusted value validation, e2e script, coverage 91.2%) | `.specs/CBL-6.2-lock-quote-cache.md` | 5ab684d |
 | CBL-6.3 | 2026-10-15 | done, review closed (append-only audit journal with a TRUNCATE trigger, source/spread/amount/guard fields, e2e with audit checks) | `.specs/CBL-6.3-quote-audit.md` | 511e496 |
 | CBL-16.9 | 2026-10-16 | done (English comments and documentation across the repository: code, tests, configs, all three specs, AGENTS.md, README; e2e runs via `test/e2e/E2E.md` with scenario E2E_Quote_LockQuote, `lock-quote.ps1` and `make e2e` removed; validation run PASS; coverage unchanged) | `.specs/CBL-16.9-conventions.md` | this commit |
+| CBL-17.10 (increment 3, quote) | 2026-10-18 | done, review closed (provider pair minimums: `RATE_MIN_AMOUNTS` parsed fail-fast (`ParseMinAmounts`: canonical pair key, positive minor units, duplicates rejected), `WithMinAmounts`, the `LockQuote` check rejects a below-minimum amount with `invalid_lock` before the rate fetch, the applied minimum is recorded in the append-only journal (migration 00003, `min_amount_minor` CHECK > 0, NULL without a minimum); unit P-01..P-05 with the red run recorded, integration I-01 on PostgreSQL and Redis, the extended compose scenario `E2E_Quote_LockQuote` PASS 11/11 (mark `20261018t143418z`); coverage 92.0% unit+integration; provider estimate feed and its audit columns deferred with KI-quote-09) | `.specs/CBL-17.10-quote-min-amount.md` | this commit |
 
 ## 11. Runbook
 
@@ -134,3 +139,10 @@ Quote audit (6.3):
    sample; the raw source values and the spread are visible in `sources`/`spread`.
 3. Corrections are impossible (append-only): an erroneous lock is corrected by a new quote;
    UPDATE/DELETE/TRUNCATE are rejected by triggers; journal growth - KI-quote-07.
+4. `invalid_lock` with `minimum` (17.10): the request amount is below the configured
+   pair minimum in minor units of the amount asset; check `RATE_MIN_AMOUNTS` (the
+   startup log `quote minimums configured` shows the pair count) and the request
+   asset; an invalid configuration refuses startup instead of disabling the limit.
+
+
+
