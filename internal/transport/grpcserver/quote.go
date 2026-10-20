@@ -11,9 +11,9 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	quotev1 "github.com/cbl/cbl-protos/gen/go/billing/quote/v1"
+	quotev1 "github.com/ZMichael3012/cbl-protos/gen/go/billing/quote/v1"
 
-	"github.com/cbl/cbl-kit/grpcmw"
+	"github.com/ZMichael3012/cbl-kit/grpcmw"
 
 	"github.com/cbl/cbl-quote/internal/domain"
 	"github.com/cbl/cbl-quote/internal/usecase"

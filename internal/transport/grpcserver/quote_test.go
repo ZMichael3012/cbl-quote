@@ -15,10 +15,10 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
-	commonv1 "github.com/cbl/cbl-protos/gen/go/billing/common/v1"
-	quotev1 "github.com/cbl/cbl-protos/gen/go/billing/quote/v1"
+	commonv1 "github.com/ZMichael3012/cbl-protos/gen/go/billing/common/v1"
+	quotev1 "github.com/ZMichael3012/cbl-protos/gen/go/billing/quote/v1"
 
-	"github.com/cbl/cbl-kit/grpcmw"
+	"github.com/ZMichael3012/cbl-kit/grpcmw"
 
 	"github.com/cbl/cbl-quote/internal/domain"
 	"github.com/cbl/cbl-quote/internal/source"

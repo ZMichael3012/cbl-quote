@@ -24,11 +24,11 @@ import (
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 
-	quotev1 "github.com/cbl/cbl-protos/gen/go/billing/quote/v1"
+	quotev1 "github.com/ZMichael3012/cbl-protos/gen/go/billing/quote/v1"
 
-	"github.com/cbl/cbl-kit/ginmw"
-	"github.com/cbl/cbl-kit/grpcmw"
-	"github.com/cbl/cbl-kit/storagex"
+	"github.com/ZMichael3012/cbl-kit/ginmw"
+	"github.com/ZMichael3012/cbl-kit/grpcmw"
+	"github.com/ZMichael3012/cbl-kit/storagex"
 
 	"github.com/cbl/cbl-quote/internal/domain"
 	"github.com/cbl/cbl-quote/internal/source"
